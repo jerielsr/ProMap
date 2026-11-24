@@ -1,0 +1,211 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+			A10000000000000000000001 /* ProMapApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000001 /* ProMapApp.swift */; };
+			A10000000000000000000002 /* MainWorkspaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000002 /* MainWorkspaceView.swift */; };
+			A10000000000000000000003 /* MediaLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* MediaLibrary.swift */; };
+			A10000000000000000000004 /* RenderEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* RenderEngine.swift */; };
+			A10000000000000000000005 /* ProMapShaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* ProMapShaders.metal */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+			A20000000000000000000001 /* ProMapApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProMapApp.swift; sourceTree = "<group>"; };
+			A20000000000000000000002 /* MainWorkspaceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainWorkspaceView.swift; sourceTree = "<group>"; };
+			A20000000000000000000003 /* MediaLibrary.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLibrary.swift; sourceTree = "<group>"; };
+			A20000000000000000000004 /* RenderEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderEngine.swift; sourceTree = "<group>"; };
+			A20000000000000000000005 /* ProMapShaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = ProMapShaders.metal; sourceTree = "<group>"; };
+			A20000000000000000000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+			A30000000000000000000001 /* ProMap.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ProMap.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+			B10000000000000000000001 /* Frameworks */ = {
+				isa = PBXFrameworksBuildPhase;
+				buildActionMask = 2147483647;
+				files = ();
+				runOnlyForDeploymentPostprocessing = 0;
+			};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+			B20000000000000000000001 = {
+				isa = PBXGroup;
+				children = (
+					B20000000000000000000002 /* ProMap */,
+					B20000000000000000000003 /* Products */,
+				);
+				sourceTree = "<group>";
+			};
+			B20000000000000000000002 /* ProMap */ = {
+				isa = PBXGroup;
+				children = (
+					A20000000000000000000001 /* ProMapApp.swift */,
+					A20000000000000000000002 /* MainWorkspaceView.swift */,
+					A20000000000000000000003 /* MediaLibrary.swift */,
+					A20000000000000000000004 /* RenderEngine.swift */,
+					A20000000000000000000005 /* ProMapShaders.metal */,
+					A20000000000000000000006 /* Info.plist */,
+				);
+				path = ProMap;
+				sourceTree = "<group>";
+			};
+			B20000000000000000000003 /* Products */ = {
+				isa = PBXGroup;
+				children = (
+					A30000000000000000000001 /* ProMap.app */,
+				);
+				name = Products;
+				sourceTree = "<group>";
+			};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+			C10000000000000000000001 /* ProMap */ = {
+				isa = PBXNativeTarget;
+				buildConfigurationList = C30000000000000000000002 /* Build configuration list for PBXNativeTarget "ProMap" */;
+				buildPhases = (
+					C20000000000000000000001 /* Sources */,
+					B10000000000000000000001 /* Frameworks */,
+					C20000000000000000000002 /* Resources */,
+				);
+				buildRules = ();
+				dependencies = ();
+				name = ProMap;
+				productName = ProMap;
+				productReference = A30000000000000000000001 /* ProMap.app */;
+				productType = "com.apple.product-type.application";
+			};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+			C40000000000000000000001 /* Project object */ = {
+				isa = PBXProject;
+				attributes = {
+					BuildIndependentTargetsInParallel = 1;
+					LastUpgradeCheck = 1500;
+					TargetAttributes = {
+						C10000000000000000000001 = {CreatedOnToolsVersion = 15.0; };
+					};
+				};
+				buildConfigurationList = C30000000000000000000001 /* Build configuration list for PBXProject "ProMap" */;
+				compatibilityVersion = "Xcode 14.0";
+				developmentRegion = en;
+				hasScannedForEncodings = 0;
+				knownRegions = (en, Base,);
+				mainGroup = B20000000000000000000001;
+				productRefGroup = B20000000000000000000003 /* Products */;
+				projectDirPath = "";
+				projectRoot = "";
+				targets = (C10000000000000000000001 /* ProMap */,);
+			};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+			C20000000000000000000002 /* Resources */ = {
+				isa = PBXResourcesBuildPhase;
+				buildActionMask = 2147483647;
+				files = ();
+				runOnlyForDeploymentPostprocessing = 0;
+			};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+			C20000000000000000000001 /* Sources */ = {
+				isa = PBXSourcesBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+					A10000000000000000000001 /* ProMapApp.swift in Sources */,
+					A10000000000000000000002 /* MainWorkspaceView.swift in Sources */,
+					A10000000000000000000003 /* MediaLibrary.swift in Sources */,
+					A10000000000000000000004 /* RenderEngine.swift in Sources */,
+					A10000000000000000000005 /* ProMapShaders.metal in Sources */,
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+			D10000000000000000000001 /* Debug */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					ALWAYS_SEARCH_USER_PATHS = NO;
+					CLANG_ENABLE_MODULES = YES;
+					MACOSX_DEPLOYMENT_TARGET = 12.0;
+					SDKROOT = macosx;
+					SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+					SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				};
+				name = Debug;
+			};
+			D10000000000000000000002 /* Release */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					ALWAYS_SEARCH_USER_PATHS = NO;
+					CLANG_ENABLE_MODULES = YES;
+					MACOSX_DEPLOYMENT_TARGET = 12.0;
+					SDKROOT = macosx;
+					SWIFT_COMPILATION_MODE = wholemodule;
+					SWIFT_OPTIMIZATION_LEVEL = "-O";
+				};
+				name = Release;
+			};
+			D10000000000000000000003 /* Debug */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					GENERATE_INFOPLIST_FILE = NO;
+					INFOPLIST_FILE = ProMap/Info.plist;
+					MACOSX_DEPLOYMENT_TARGET = 12.0;
+					PRODUCT_BUNDLE_IDENTIFIER = org.promap.app;
+					PRODUCT_NAME = "$(TARGET_NAME)";
+					SDKROOT = macosx;
+					SUPPORTED_PLATFORMS = macosx;
+					SWIFT_EMIT_LOC_STRINGS = YES;
+					SWIFT_VERSION = 5.0;
+				};
+				name = Debug;
+			};
+			D10000000000000000000004 /* Release */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					GENERATE_INFOPLIST_FILE = NO;
+					INFOPLIST_FILE = ProMap/Info.plist;
+					MACOSX_DEPLOYMENT_TARGET = 12.0;
+					PRODUCT_BUNDLE_IDENTIFIER = org.promap.app;
+					PRODUCT_NAME = "$(TARGET_NAME)";
+					SDKROOT = macosx;
+					SUPPORTED_PLATFORMS = macosx;
+					SWIFT_EMIT_LOC_STRINGS = YES;
+					SWIFT_VERSION = 5.0;
+				};
+				name = Release;
+			};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+			C30000000000000000000001 /* Build configuration list for PBXProject "ProMap" */ = {
+				isa = XCConfigurationList;
+				buildConfigurations = (
+					D10000000000000000000001 /* Debug */,
+					D10000000000000000000002 /* Release */,
+				);
+				defaultConfigurationIsVisible = 0;
+				defaultConfigurationName = Release;
+			};
+			C30000000000000000000002 /* Build configuration list for PBXNativeTarget "ProMap" */ = {
+				isa = XCConfigurationList;
+				buildConfigurations = (
+					D10000000000000000000003 /* Debug */,
+					D10000000000000000000004 /* Release */,
+				);
+				defaultConfigurationIsVisible = 0;
+				defaultConfigurationName = Release;
+			};
+/* End XCConfigurationList section */
+	};
+	rootObject = C40000000000000000000001 /* Project object */;
+}
