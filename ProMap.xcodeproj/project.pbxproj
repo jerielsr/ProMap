@@ -11,6 +11,18 @@
 			A10000000000000000000003 /* MediaLibrary.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* MediaLibrary.swift */; };
 			A10000000000000000000004 /* RenderEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* RenderEngine.swift */; };
 			A10000000000000000000005 /* ProMapShaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* ProMapShaders.metal */; };
+			A10000000000000000000006 /* ProjectionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* ProjectionModels.swift */; };
+			A10000000000000000000007 /* ProjectionModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000008 /* ProjectionModelTests.swift */; };
+			A10000000000000000000008 /* ExternalControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* ExternalControl.swift */; };
+			A10000000000000000000009 /* MIDIControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000010 /* MIDIControl.swift */; };
+			A10000000000000000000010 /* NDIRuntimeBridge.c in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000011 /* NDIRuntimeBridge.c */; };
+			A10000000000000000000011 /* NDIService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000013 /* NDIService.swift */; };
+			A10000000000000000000012 /* RecoverySessionMarker.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000015 /* RecoverySessionMarker.swift */; };
+			A10000000000000000000013 /* RecoverySessionMarkerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000016 /* RecoverySessionMarkerTests.swift */; };
+			A10000000000000000000014 /* SyphonService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000017 /* SyphonService.swift */; };
+			A10000000000000000000015 /* Syphon.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* Syphon.framework */; };
+			A10000000000000000000016 /* Syphon.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000018 /* Syphon.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+			A10000000000000000000017 /* Syphon license in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000021 /* Syphon LICENSE.txt */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -20,11 +32,35 @@
 			A20000000000000000000004 /* RenderEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RenderEngine.swift; sourceTree = "<group>"; };
 			A20000000000000000000005 /* ProMapShaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = ProMapShaders.metal; sourceTree = "<group>"; };
 			A20000000000000000000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+			A20000000000000000000007 /* ProjectionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectionModels.swift; sourceTree = "<group>"; };
+			A20000000000000000000008 /* ProjectionModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProjectionModelTests.swift; sourceTree = "<group>"; };
+			A20000000000000000000009 /* ExternalControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExternalControl.swift; sourceTree = "<group>"; };
+			A20000000000000000000010 /* MIDIControl.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MIDIControl.swift; sourceTree = "<group>"; };
+			A20000000000000000000011 /* NDIRuntimeBridge.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = NDIRuntimeBridge.c; sourceTree = "<group>"; };
+			A20000000000000000000012 /* NDIRuntimeBridge.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = NDIRuntimeBridge.h; sourceTree = "<group>"; };
+			A20000000000000000000013 /* NDIService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NDIService.swift; sourceTree = "<group>"; };
+			A20000000000000000000014 /* ProMap-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ProMap-Bridging-Header.h"; sourceTree = "<group>"; };
+			A20000000000000000000015 /* RecoverySessionMarker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoverySessionMarker.swift; sourceTree = "<group>"; };
+			A20000000000000000000016 /* RecoverySessionMarkerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecoverySessionMarkerTests.swift; sourceTree = "<group>"; };
+			A20000000000000000000017 /* SyphonService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyphonService.swift; sourceTree = "<group>"; };
+			A20000000000000000000018 /* Syphon.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Syphon.framework; path = ThirdParty/Syphon/Syphon.framework; sourceTree = SOURCE_ROOT; };
+			A20000000000000000000019 /* Syphon source */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ThirdParty/Syphon/Source; sourceTree = SOURCE_ROOT; };
+			A20000000000000000000020 /* Syphon integration notes */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = ThirdParty/Syphon/README.md; sourceTree = SOURCE_ROOT; };
+			A20000000000000000000021 /* Syphon LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdParty/Syphon/LICENSE.txt; sourceTree = SOURCE_ROOT; };
 			A30000000000000000000001 /* ProMap.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ProMap.app; sourceTree = BUILT_PRODUCTS_DIR; };
+			A30000000000000000000002 /* ProMapTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ProMapTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 			B10000000000000000000001 /* Frameworks */ = {
+				isa = PBXFrameworksBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+					A10000000000000000000015 /* Syphon.framework in Frameworks */,
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
+			B10000000000000000000002 /* Test Frameworks */ = {
 				isa = PBXFrameworksBuildPhase;
 				buildActionMask = 2147483647;
 				files = ();
@@ -32,12 +68,28 @@
 			};
 /* End PBXFrameworksBuildPhase section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+			B10000000000000000000003 /* Embed Frameworks */ = {
+				isa = PBXCopyFilesBuildPhase;
+				buildActionMask = 2147483647;
+				dstPath = "";
+				dstSubfolderSpec = 10;
+				files = (
+					A10000000000000000000016 /* Syphon.framework in Embed Frameworks */,
+				);
+				name = "Embed Frameworks";
+				runOnlyForDeploymentPostprocessing = 0;
+			};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXGroup section */
 			B20000000000000000000001 = {
 				isa = PBXGroup;
 				children = (
 					B20000000000000000000002 /* ProMap */,
 					B20000000000000000000003 /* Products */,
+					B20000000000000000000004 /* ProMapTests */,
+					B20000000000000000000005 /* Syphon Integration */,
 				);
 				sourceTree = "<group>";
 			};
@@ -49,6 +101,15 @@
 					A20000000000000000000003 /* MediaLibrary.swift */,
 					A20000000000000000000004 /* RenderEngine.swift */,
 					A20000000000000000000005 /* ProMapShaders.metal */,
+					A20000000000000000000007 /* ProjectionModels.swift */,
+					A20000000000000000000009 /* ExternalControl.swift */,
+					A20000000000000000000010 /* MIDIControl.swift */,
+					A20000000000000000000011 /* NDIRuntimeBridge.c */,
+					A20000000000000000000012 /* NDIRuntimeBridge.h */,
+					A20000000000000000000013 /* NDIService.swift */,
+					A20000000000000000000014 /* ProMap-Bridging-Header.h */,
+					A20000000000000000000015 /* RecoverySessionMarker.swift */,
+					A20000000000000000000017 /* SyphonService.swift */,
 					A20000000000000000000006 /* Info.plist */,
 				);
 				path = ProMap;
@@ -58,8 +119,29 @@
 				isa = PBXGroup;
 				children = (
 					A30000000000000000000001 /* ProMap.app */,
+					A30000000000000000000002 /* ProMapTests.xctest */,
 				);
 				name = Products;
+				sourceTree = "<group>";
+			};
+			B20000000000000000000004 /* ProMapTests */ = {
+				isa = PBXGroup;
+				children = (
+					A20000000000000000000008 /* ProjectionModelTests.swift */,
+					A20000000000000000000016 /* RecoverySessionMarkerTests.swift */,
+				);
+				path = ProMapTests;
+				sourceTree = "<group>";
+			};
+			B20000000000000000000005 /* Syphon Integration */ = {
+				isa = PBXGroup;
+				children = (
+					A20000000000000000000018 /* Syphon.framework */,
+					A20000000000000000000019 /* Syphon source */,
+					A20000000000000000000020 /* Syphon integration notes */,
+					A20000000000000000000021 /* Syphon LICENSE.txt */,
+				);
+				name = "Syphon Integration";
 				sourceTree = "<group>";
 			};
 /* End PBXGroup section */
@@ -72,6 +154,7 @@
 					C20000000000000000000001 /* Sources */,
 					B10000000000000000000001 /* Frameworks */,
 					C20000000000000000000002 /* Resources */,
+					B10000000000000000000003 /* Embed Frameworks */,
 				);
 				buildRules = ();
 				dependencies = ();
@@ -79,6 +162,23 @@
 				productName = ProMap;
 				productReference = A30000000000000000000001 /* ProMap.app */;
 				productType = "com.apple.product-type.application";
+			};
+			C10000000000000000000002 /* ProMapTests */ = {
+				isa = PBXNativeTarget;
+				buildConfigurationList = C30000000000000000000003 /* Build configuration list for PBXNativeTarget "ProMapTests" */;
+				buildPhases = (
+					C20000000000000000000003 /* Test Sources */,
+					B10000000000000000000002 /* Test Frameworks */,
+					C20000000000000000000004 /* Test Resources */,
+				);
+				buildRules = ();
+				dependencies = (
+					C60000000000000000000001 /* ProMap app dependency */,
+				);
+				name = ProMapTests;
+				productName = ProMapTests;
+				productReference = A30000000000000000000002 /* ProMapTests.xctest */;
+				productType = "com.apple.product-type.bundle.unit-test";
 			};
 /* End PBXNativeTarget section */
 
@@ -90,6 +190,7 @@
 					LastUpgradeCheck = 1500;
 					TargetAttributes = {
 						C10000000000000000000001 = {CreatedOnToolsVersion = 15.0; };
+					C10000000000000000000002 = {CreatedOnToolsVersion = 17.0; TestTargetID = C10000000000000000000001; };
 					};
 				};
 				buildConfigurationList = C30000000000000000000001 /* Build configuration list for PBXProject "ProMap" */;
@@ -101,12 +202,32 @@
 				productRefGroup = B20000000000000000000003 /* Products */;
 				projectDirPath = "";
 				projectRoot = "";
-				targets = (C10000000000000000000001 /* ProMap */,);
+				targets = (
+					C10000000000000000000001 /* ProMap */,
+					C10000000000000000000002 /* ProMapTests */,
+				);
 			};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 			C20000000000000000000002 /* Resources */ = {
+				isa = PBXResourcesBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+					A10000000000000000000017 /* Syphon license in Resources */,
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
+			C20000000000000000000003 /* Test Sources */ = {
+				isa = PBXSourcesBuildPhase;
+				buildActionMask = 2147483647;
+				files = (
+					A10000000000000000000007 /* ProjectionModelTests.swift in Sources */,
+					A10000000000000000000013 /* RecoverySessionMarkerTests.swift in Sources */,
+				);
+				runOnlyForDeploymentPostprocessing = 0;
+			};
+			C20000000000000000000004 /* Test Resources */ = {
 				isa = PBXResourcesBuildPhase;
 				buildActionMask = 2147483647;
 				files = ();
@@ -124,6 +245,13 @@
 					A10000000000000000000003 /* MediaLibrary.swift in Sources */,
 					A10000000000000000000004 /* RenderEngine.swift in Sources */,
 					A10000000000000000000005 /* ProMapShaders.metal in Sources */,
+					A10000000000000000000006 /* ProjectionModels.swift in Sources */,
+					A10000000000000000000008 /* ExternalControl.swift in Sources */,
+					A10000000000000000000009 /* MIDIControl.swift in Sources */,
+					A10000000000000000000010 /* NDIRuntimeBridge.c in Sources */,
+					A10000000000000000000011 /* NDIService.swift in Sources */,
+					A10000000000000000000012 /* RecoverySessionMarker.swift in Sources */,
+					A10000000000000000000014 /* SyphonService.swift in Sources */,
 				);
 				runOnlyForDeploymentPostprocessing = 0;
 			};
@@ -157,8 +285,12 @@
 			D10000000000000000000003 /* Debug */ = {
 				isa = XCBuildConfiguration;
 				buildSettings = {
+					ENABLE_TESTABILITY = YES;
 					GENERATE_INFOPLIST_FILE = NO;
 					INFOPLIST_FILE = ProMap/Info.plist;
+					HEADER_SEARCH_PATHS = ("$(inherited)", /usr/local/include, "/Library/NDI\\ SDK\\ for\\ Apple/include", );
+					FRAMEWORK_SEARCH_PATHS = ("$(inherited)", "$(SRCROOT)/ThirdParty/Syphon", );
+					SWIFT_OBJC_BRIDGING_HEADER = "ProMap/ProMap-Bridging-Header.h";
 					MACOSX_DEPLOYMENT_TARGET = 12.0;
 					PRODUCT_BUNDLE_IDENTIFIER = org.promap.app;
 					PRODUCT_NAME = "$(TARGET_NAME)";
@@ -166,6 +298,7 @@
 					SUPPORTED_PLATFORMS = macosx;
 					SWIFT_EMIT_LOC_STRINGS = YES;
 					SWIFT_VERSION = 5.0;
+					LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @loader_path/../Frameworks";
 				};
 				name = Debug;
 			};
@@ -174,6 +307,9 @@
 				buildSettings = {
 					GENERATE_INFOPLIST_FILE = NO;
 					INFOPLIST_FILE = ProMap/Info.plist;
+					HEADER_SEARCH_PATHS = ("$(inherited)", /usr/local/include, "/Library/NDI\\ SDK\\ for\\ Apple/include", );
+					FRAMEWORK_SEARCH_PATHS = ("$(inherited)", "$(SRCROOT)/ThirdParty/Syphon", );
+					SWIFT_OBJC_BRIDGING_HEADER = "ProMap/ProMap-Bridging-Header.h";
 					MACOSX_DEPLOYMENT_TARGET = 12.0;
 					PRODUCT_BUNDLE_IDENTIFIER = org.promap.app;
 					PRODUCT_NAME = "$(TARGET_NAME)";
@@ -181,6 +317,38 @@
 					SUPPORTED_PLATFORMS = macosx;
 					SWIFT_EMIT_LOC_STRINGS = YES;
 					SWIFT_VERSION = 5.0;
+					LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks @loader_path/../Frameworks";
+				};
+				name = Release;
+			};
+			D10000000000000000000005 /* Tests Debug */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					BUNDLE_LOADER = "$(TEST_HOST)";
+					GENERATE_INFOPLIST_FILE = YES;
+					ONLY_ACTIVE_ARCH = YES;
+					MACOSX_DEPLOYMENT_TARGET = 12.0;
+					PRODUCT_BUNDLE_IDENTIFIER = org.promap.tests;
+					PRODUCT_NAME = "$(TARGET_NAME)";
+					SDKROOT = macosx;
+					SUPPORTED_PLATFORMS = macosx;
+					SWIFT_VERSION = 5.0;
+					TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ProMap.app/Contents/MacOS/ProMap";
+				};
+				name = Debug;
+			};
+			D10000000000000000000006 /* Tests Release */ = {
+				isa = XCBuildConfiguration;
+				buildSettings = {
+					BUNDLE_LOADER = "$(TEST_HOST)";
+					GENERATE_INFOPLIST_FILE = YES;
+					MACOSX_DEPLOYMENT_TARGET = 12.0;
+					PRODUCT_BUNDLE_IDENTIFIER = org.promap.tests;
+					PRODUCT_NAME = "$(TARGET_NAME)";
+					SDKROOT = macosx;
+					SUPPORTED_PLATFORMS = macosx;
+					SWIFT_VERSION = 5.0;
+					TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ProMap.app/Contents/MacOS/ProMap";
 				};
 				name = Release;
 			};
@@ -205,7 +373,28 @@
 				defaultConfigurationIsVisible = 0;
 				defaultConfigurationName = Release;
 			};
+			C30000000000000000000003 /* Build configuration list for PBXNativeTarget "ProMapTests" */ = {
+				isa = XCConfigurationList;
+				buildConfigurations = (
+					D10000000000000000000005 /* Tests Debug */,
+					D10000000000000000000006 /* Tests Release */,
+				);
+				defaultConfigurationIsVisible = 0;
+				defaultConfigurationName = Release;
+			};
 /* End XCConfigurationList section */
+			C50000000000000000000001 /* ProMap app proxy */ = {
+				isa = PBXContainerItemProxy;
+				containerPortal = C40000000000000000000001 /* Project object */;
+				proxyType = 1;
+				remoteGlobalIDString = C10000000000000000000001;
+				remoteInfo = ProMap;
+			};
+			C60000000000000000000001 /* ProMap app dependency */ = {
+				isa = PBXTargetDependency;
+				target = C10000000000000000000001 /* ProMap */;
+				targetProxy = C50000000000000000000001 /* ProMap app proxy */;
+			};
 	};
 	rootObject = C40000000000000000000001 /* Project object */;
 }

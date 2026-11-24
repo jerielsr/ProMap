@@ -26,5 +26,13 @@
 	<string>NSApplication</string>
 	<key>NSSupportsAutomaticGraphicsSwitching</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>ProMap uses connected cameras and USB video capture devices as live visual sources for projection mapping.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>ProMap uses your local network to discover and receive NDI video sources you choose for projection mapping.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_ndi._tcp</string>
+	</array>
 </dict>
 </plist>
