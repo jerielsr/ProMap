@@ -226,7 +226,9 @@ fragment float4 texturedFragment(
     constant float4 &generatorSecondaryColor [[buffer(25)]],
     constant float4 &layerContentTransform [[buffer(26)]],
     constant float &layerContentRotation [[buffer(27)]],
-    constant uint &layerContentFlips [[buffer(28)]]
+    constant uint &layerContentFlips [[buffer(28)]],
+    constant float2 &contentSkew [[buffer(29)]],
+    constant float2 &layerContentSkew [[buffer(30)]]
 ) {
     constexpr sampler sourceSampler(address::clamp_to_edge, filter::linear);
     float2 outputUV = input.position.xy / outputSize;
@@ -301,6 +303,7 @@ fragment float4 texturedFragment(
         ), 1.0);
     } else {
         float2 contentCenter = sourceUV - 0.5;
+        contentCenter += float2(contentSkew.x * contentCenter.y, contentSkew.y * contentCenter.x);
         if ((contentFlips & 1u) != 0u) contentCenter.x = -contentCenter.x;
         if ((contentFlips & 2u) != 0u) contentCenter.y = -contentCenter.y;
         float rotationCosine = cos(contentRotation);
@@ -311,6 +314,7 @@ fragment float4 texturedFragment(
         );
         float2 sampleUV = rotatedContent / max(contentTransform.xy, float2(0.1)) + 0.5 + contentTransform.zw;
         float2 layerCenter = sampleUV - 0.5;
+        layerCenter += float2(layerContentSkew.x * layerCenter.y, layerContentSkew.y * layerCenter.x);
         if ((layerContentFlips & 1u) != 0u) layerCenter.x = -layerCenter.x;
         if ((layerContentFlips & 2u) != 0u) layerCenter.y = -layerCenter.y;
         float layerRotationCosine = cos(layerContentRotation);

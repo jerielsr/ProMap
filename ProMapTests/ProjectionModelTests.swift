@@ -225,6 +225,7 @@ final class ProjectionModelTests: XCTestCase {
         XCTAssertEqual(restored.scenes.first?.name, "Legacy Cue")
         XCTAssertNil(restored.surfaces.first?.colorCorrection)
         XCTAssertNil(restored.scenes.first?.surfaces.first?.colorCorrection)
+        XCTAssertNil(restored.scenes.first?.surfaces.first?.isLooping)
     }
 
     func testShowDocumentRestoresScenesAndPlaybackState() throws {
@@ -235,18 +236,58 @@ final class ProjectionModelTests: XCTestCase {
             isEnabled: true,
             opacity: 0.8,
             isPlaying: true,
-            playbackTime: 12.5
+            playbackTime: 12.5,
+            playbackRate: 0.75,
+            isLooping: true
         )
-        let scene = ScenePreset(name: "Worship", layers: [layer], surfaces: [SceneSurfaceState(surface: surface)])
-        let show = ShowDocument(surfaces: [surface], layers: [layer], scenes: [scene])
+        let scene = ScenePreset(
+            name: "Worship",
+            layers: [layer],
+            surfaces: [SceneSurfaceState(
+                surface: surface,
+                isLooping: true,
+                isPlaying: true,
+                playbackTime: 42.25,
+                playbackRate: 1.5
+            )]
+        )
+        let sourceAudio = SavedSourceAudioState(
+            sourcePath: "/tmp/ambient.mov",
+            audioMuted: true,
+            audioVolume: 1,
+            isLooping: true,
+            isPlaying: true,
+            playbackTime: 12.5,
+            playbackRate: 0.75
+        )
+        let show = ShowDocument(surfaces: [surface], layers: [layer], scenes: [scene], sourceAudio: [sourceAudio])
         let restored = try JSONDecoder().decode(ShowDocument.self, from: JSONEncoder().encode(show))
 
         XCTAssertEqual(restored.formatVersion, ShowDocument.currentVersion)
         XCTAssertEqual(restored.scenes, [scene])
         XCTAssertEqual(restored.layers.first?.playbackTime, 12.5)
+        XCTAssertEqual(restored.layers.first?.playbackRate, 0.75)
+        XCTAssertEqual(restored.layers.first?.isLooping, true)
+        XCTAssertEqual(restored.scenes.first?.surfaces.first?.isLooping, true)
+        XCTAssertEqual(restored.scenes.first?.surfaces.first?.isPlaying, true)
+        XCTAssertEqual(restored.scenes.first?.surfaces.first?.playbackTime, 42.25)
+        XCTAssertEqual(restored.scenes.first?.surfaces.first?.playbackRate, 1.5)
+        XCTAssertEqual(restored.sourceAudio, [sourceAudio])
         XCTAssertEqual(restored.mediaPaths, ["/tmp/ambient.mov"])
         XCTAssertEqual(restored.surfaces.first?.colorCorrection, surface.colorCorrection)
         XCTAssertEqual(restored.scenes.first?.surfaces.first?.colorCorrection, surface.colorCorrection)
+    }
+
+    func testPlaybackRateStateIsClampedToSupportedRange() {
+        let layer = SavedLayerState(sourcePath: "/tmp/fast.mov", playbackRate: 3)
+        let source = SavedSourceAudioState(
+            sourcePath: "/tmp/slow.mov",
+            audioMuted: true,
+            audioVolume: 1,
+            playbackRate: 0.1
+        )
+        XCTAssertEqual(layer.playbackRate, 2)
+        XCTAssertEqual(source.playbackRate, 0.25)
     }
 
     func testNDIAudioDelayAndMaskAudioStateRoundTripInShow() throws {
@@ -296,6 +337,19 @@ final class ProjectionModelTests: XCTestCase {
 
     func testFreeShowSurfaceRoutesAcceptNamesAndBoundIntensity() {
         let control = ExternalControlManager()
+
+        guard case .setOutputActive(false)? = control.commandForGET(
+            path: "/v1/output/active",
+            query: ["value": "false"]
+        ) else {
+            return XCTFail("Expected an output active/blackout command")
+        }
+        guard case .setOutputIntensity(0.5)? = control.commandForGET(
+            path: "/v1/output/intensity",
+            query: ["value": "0.5"]
+        ) else {
+            return XCTFail("Expected a master output intensity command")
+        }
 
         guard case .setSurfaceBlackoutNamed("Church Cross", true)? = control.commandForGET(
             path: "/v1/surface/blackout",

@@ -13,6 +13,8 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
     @Published private(set) var presentedFPSByOutputID: [UUID: Double] = [:]
     @Published private(set) var latePresentationPercentByOutputID: [UUID: Double] = [:]
     @Published private(set) var gpuTimeMillisecondsByOutputID: [UUID: Double] = [:]
+    @Published private(set) var gpuTimingStatusByOutputID: [UUID: String] = [:]
+    @Published private(set) var cpuFrameBuildMillisecondsByOutputID: [UUID: Double] = [:]
 
     private(set) var device: MTLDevice?
     private var commandQueue: MTLCommandQueue?
@@ -30,8 +32,10 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
     private var lastTexturePruneTime: CFTimeInterval = 0
     private let frameRateLock = NSLock()
     private let gpuTimingLock = NSLock()
+    private let cpuTimingLock = NSLock()
     private struct FrameRateCounter {
         var outputID: UUID
+        var isProjectorOutput: Bool
         var intervalStart: CFTimeInterval
         var frameCount: Int
         var measuredFPS: Double
@@ -45,6 +49,7 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
     private var frameRateCounters: [ObjectIdentifier: FrameRateCounter] = [:]
     private struct GPUTimingCounter {
         var outputID: UUID
+        var isProjectorOutput: Bool
         var windowStart: CFTimeInterval
         var totalMilliseconds: Double
         var sampleCount: Int
@@ -52,6 +57,9 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
         var lastSampleTime: CFTimeInterval
     }
     private var gpuTimingCounters: [ObjectIdentifier: GPUTimingCounter] = [:]
+    private var gpuTimingStatusesByView: [ObjectIdentifier: (outputID: UUID, isProjectorOutput: Bool, message: String)] = [:]
+    private var cpuFrameBuildByView: [ObjectIdentifier: (outputID: UUID, milliseconds: Double)] = [:]
+    private var lastCPUFrameBuildPublishTime: CFTimeInterval = 0
 
     var usesLowPowerGPU: Bool? { device?.isLowPower }
 
@@ -65,6 +73,11 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
             self.cvTexture = cvTexture
             self.frameSequence = frameSequence
         }
+    }
+
+    private struct FrameRateAggregate {
+        let fps: Double
+        let latePercent: Double
     }
 
     private let textureLock = NSLock()
@@ -196,20 +209,26 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
         sessionsLock.unlock()
         gpuTimingLock.lock()
         gpuTimingCounters.removeValue(forKey: ObjectIdentifier(view))
+        gpuTimingStatusesByView.removeValue(forKey: ObjectIdentifier(view))
         let remainingGPUTimes = Self.gpuTimesByOutput(gpuTimingCounters)
+        let remainingGPUStatuses = Self.gpuStatusesByOutput(gpuTimingStatusesByView)
         gpuTimingLock.unlock()
         DispatchQueue.main.async { [weak self] in
             self?.gpuTimeMillisecondsByOutputID = remainingGPUTimes
+            self?.gpuTimingStatusByOutputID = remainingGPUStatuses
         }
+        cpuTimingLock.lock()
+        cpuFrameBuildByView.removeValue(forKey: ObjectIdentifier(view))
+        let remainingCPUFrameBuild = Dictionary(grouping: cpuFrameBuildByView.values, by: \.outputID)
+            .mapValues { $0.map(\.milliseconds).max() ?? 0 }
+        cpuTimingLock.unlock()
+        DispatchQueue.main.async { [weak self] in self?.cpuFrameBuildMillisecondsByOutputID = remainingCPUFrameBuild }
         frameRateLock.lock()
         frameRateCounters.removeValue(forKey: ObjectIdentifier(view))
-        let currentMaximum = frameRateCounters.values.map(\.measuredFPS).max() ?? 0
-        var ratesByOutput: [UUID: Double] = [:]
-        var latePercentByOutput: [UUID: Double] = [:]
-        for sample in frameRateCounters.values {
-            ratesByOutput[sample.outputID] = max(ratesByOutput[sample.outputID] ?? 0, sample.measuredFPS)
-            latePercentByOutput[sample.outputID] = max(latePercentByOutput[sample.outputID] ?? 0, sample.latePresentationPercent)
-        }
+        let aggregates = Self.frameRatesByOutput(frameRateCounters)
+        let currentMaximum = aggregates.values.map(\.fps).max() ?? 0
+        let ratesByOutput = aggregates.mapValues(\.fps)
+        let latePercentByOutput = aggregates.mapValues(\.latePercent)
         frameRateLock.unlock()
         DispatchQueue.main.async { [weak self] in
             self?.presentedFPS = currentMaximum
@@ -244,18 +263,22 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
 
     private static func gpuTimesByOutput(_ counters: [ObjectIdentifier: GPUTimingCounter]) -> [UUID: Double] {
         var times: [UUID: Double] = [:]
-        for sample in counters.values {
-            guard let average = sample.averageMilliseconds else { continue }
-            times[sample.outputID] = max(times[sample.outputID] ?? 0, average)
+        for (outputID, samples) in Dictionary(grouping: counters.values, by: \.outputID) {
+            let projectorSamples = samples.filter(\.isProjectorOutput)
+            for sample in projectorSamples.isEmpty ? samples : projectorSamples {
+                guard let average = sample.averageMilliseconds else { continue }
+                times[outputID] = max(times[outputID] ?? 0, average)
+            }
         }
         return times
     }
 
-    private func recordGPUTime(_ milliseconds: Double, for viewID: ObjectIdentifier, outputID: UUID) {
+    private func recordGPUTime(_ milliseconds: Double, for viewID: ObjectIdentifier, outputID: UUID, isProjectorOutput: Bool) {
         let now = CACurrentMediaTime()
         gpuTimingLock.lock()
         var counter = gpuTimingCounters[viewID] ?? GPUTimingCounter(
             outputID: outputID,
+            isProjectorOutput: isProjectorOutput,
             windowStart: now,
             totalMilliseconds: 0,
             sampleCount: 0,
@@ -263,6 +286,8 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
             lastSampleTime: now
         )
         counter.outputID = outputID
+        counter.isProjectorOutput = isProjectorOutput
+        gpuTimingStatusesByView[viewID] = (outputID, isProjectorOutput, "Metal GPU timestamps available")
         counter.totalMilliseconds += milliseconds
         counter.sampleCount += 1
         counter.lastSampleTime = now
@@ -276,12 +301,67 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
         gpuTimingCounters[viewID] = counter
         gpuTimingCounters = gpuTimingCounters.filter { now - $0.value.lastSampleTime <= 2 }
         let timesByOutput = Self.gpuTimesByOutput(gpuTimingCounters)
+        let gpuStatuses = elapsed >= 0.5 ? Self.gpuStatusesByOutput(gpuTimingStatusesByView) : nil
         gpuTimingLock.unlock()
-        if elapsed >= 0.5 {
+        if let gpuStatuses {
             DispatchQueue.main.async { [weak self] in
                 self?.gpuTimeMillisecondsByOutputID = timesByOutput
+                self?.gpuTimingStatusByOutputID = gpuStatuses
             }
         }
+    }
+
+    private func recordMissingGPUTimestamp(for viewID: ObjectIdentifier, outputID: UUID, isProjectorOutput: Bool) {
+        let message = "Metal completed the frame without GPU timestamps"
+        gpuTimingLock.lock()
+        let shouldPublish = gpuTimingStatusesByView[viewID]?.message != message
+        gpuTimingStatusesByView[viewID] = (outputID, isProjectorOutput, message)
+        let statuses = Self.gpuStatusesByOutput(gpuTimingStatusesByView)
+        gpuTimingLock.unlock()
+        guard shouldPublish else { return }
+        DispatchQueue.main.async { [weak self] in self?.gpuTimingStatusByOutputID = statuses }
+    }
+
+    private static func gpuStatusesByOutput(
+        _ statuses: [ObjectIdentifier: (outputID: UUID, isProjectorOutput: Bool, message: String)]
+    ) -> [UUID: String] {
+        var result: [UUID: String] = [:]
+        for (outputID, entries) in Dictionary(grouping: statuses.values, by: \.outputID) {
+            let projectors = entries.filter(\.isProjectorOutput)
+            let selected = projectors.isEmpty ? entries : projectors
+            result[outputID] = selected.first?.message
+        }
+        return result
+    }
+
+    private func recordCPUFrameBuild(_ milliseconds: Double, for viewID: ObjectIdentifier, outputID: UUID) {
+        let now = CACurrentMediaTime()
+        cpuTimingLock.lock()
+        cpuFrameBuildByView[viewID] = (outputID, milliseconds)
+        guard now - lastCPUFrameBuildPublishTime >= 0.5 else {
+            cpuTimingLock.unlock()
+            return
+        }
+        lastCPUFrameBuildPublishTime = now
+        let values = Dictionary(grouping: cpuFrameBuildByView.values, by: \.outputID)
+            .mapValues { $0.map(\.milliseconds).max() ?? 0 }
+        cpuTimingLock.unlock()
+        DispatchQueue.main.async { [weak self] in self?.cpuFrameBuildMillisecondsByOutputID = values }
+    }
+
+    private static func frameRatesByOutput(_ counters: [ObjectIdentifier: FrameRateCounter]) -> [UUID: FrameRateAggregate] {
+        Dictionary(grouping: counters.values, by: \.outputID).mapValues { samples in
+            let projectorSamples = samples.filter(\.isProjectorOutput)
+            let selectedSamples = projectorSamples.isEmpty ? samples : projectorSamples
+            return FrameRateAggregate(
+                fps: selectedSamples.map(\.measuredFPS).max() ?? 0,
+                latePercent: selectedSamples.map(\.latePresentationPercent).max() ?? 0
+            )
+        }
+    }
+
+    private static func maximumFrameRate(_ counters: [ObjectIdentifier: FrameRateCounter]) -> Double {
+        frameRatesByOutput(counters).values.map(\.fps).max() ?? 0
     }
 
     private func pruneUnusedTexturesIfNeeded() {
@@ -320,6 +400,7 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
             let drawable = view.currentDrawable
         else { return }
 
+        let frameBuildStartTime = CACurrentMediaTime()
         passDescriptor.colorAttachments[0].loadAction = .clear
         passDescriptor.colorAttachments[0].storeAction = .store
         passDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
@@ -398,6 +479,8 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
                     if content.isFlippedHorizontally { contentFlips |= 1 }
                     if content.isFlippedVertically { contentFlips |= 2 }
                     encoder.setFragmentBytes(&contentFlips, length: MemoryLayout<UInt32>.size, index: 18)
+                    var contentSkew = SIMD2<Float>(Float(content.skewX), Float(content.skewY))
+                    encoder.setFragmentBytes(&contentSkew, length: MemoryLayout<SIMD2<Float>>.size, index: 29)
                     guard surface.hasUsableGeometry,
                           let transform = ProjectiveTransform.make(
                             from: surface.corners,
@@ -586,8 +669,9 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
                         var effectCount = effectCountValue
                         encoder.setFragmentBytes(&effectCount, length: MemoryLayout<UInt32>.size, index: 10)
 
+                        let sceneTransitionOpacity = Float(snapshot.surfaceTransitionOpacityByID[surface.id] ?? 1)
                         var settings: SIMD4<Float> = [
-                            layerOpacity * Float(surface.opacity),
+                            layerOpacity * Float(surface.opacity) * sceneTransitionOpacity,
                             Float(surface.brightness * snapshot.outputIntensity),
                             pattern.shaderValue,
                             surface.isMaskInverted ? 1 : 0
@@ -633,6 +717,8 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
                         if layerContent.isFlippedHorizontally { layerContentFlips |= 1 }
                         if layerContent.isFlippedVertically { layerContentFlips |= 2 }
                         encoder.setFragmentBytes(&layerContentFlips, length: MemoryLayout<UInt32>.size, index: 28)
+                        var layerContentSkew = SIMD2<Float>(Float(layerContent.skewX), Float(layerContent.skewY))
+                        encoder.setFragmentBytes(&layerContentSkew, length: MemoryLayout<SIMD2<Float>>.size, index: 30)
                         encoder.drawPrimitives(
                             type: meshEnabled ? .triangle : .triangleStrip,
                             vertexStart: 0,
@@ -693,20 +779,41 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
         let targetFramesPerSecond = max(view.preferredFramesPerSecond, 1)
         let outputID = target.outputID
         drawable.addPresentedHandler { [weak self] _ in
-            self?.recordPresentedFrame(for: viewID, targetFramesPerSecond: targetFramesPerSecond)
+            self?.recordPresentedFrame(
+                for: viewID,
+                targetFramesPerSecond: targetFramesPerSecond,
+                isProjectorOutput: target.isProjectorOutput
+            )
         }
         commandBuffer.addCompletedHandler { [weak self] completedBuffer in
-            guard completedBuffer.status == .completed,
-                  completedBuffer.gpuStartTime > 0,
-                  completedBuffer.gpuEndTime > completedBuffer.gpuStartTime else { return }
+            guard completedBuffer.status == .completed else { return }
+            guard completedBuffer.gpuStartTime > 0,
+                  completedBuffer.gpuEndTime > completedBuffer.gpuStartTime else {
+                self?.recordMissingGPUTimestamp(
+                    for: viewID,
+                    outputID: outputID,
+                    isProjectorOutput: target.isProjectorOutput
+                )
+                return
+            }
             let gpuMilliseconds = (completedBuffer.gpuEndTime - completedBuffer.gpuStartTime) * 1_000
-            self?.recordGPUTime(gpuMilliseconds, for: viewID, outputID: outputID)
+            self?.recordGPUTime(
+                gpuMilliseconds,
+                for: viewID,
+                outputID: outputID,
+                isProjectorOutput: target.isProjectorOutput
+            )
         }
         commandBuffer.present(drawable)
+        recordCPUFrameBuild(
+            (CACurrentMediaTime() - frameBuildStartTime) * 1_000,
+            for: viewID,
+            outputID: outputID
+        )
         commandBuffer.commit()
     }
 
-    private func recordPresentedFrame(for viewID: ObjectIdentifier, targetFramesPerSecond: Int) {
+    private func recordPresentedFrame(for viewID: ObjectIdentifier, targetFramesPerSecond: Int, isProjectorOutput: Bool) {
         let now = CACurrentMediaTime()
         sessionsLock.lock()
         let outputID = sessionsByView[viewID]?.outputID ?? ProjectionOutput.mainID
@@ -714,6 +821,7 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
         frameRateLock.lock()
         var counter = frameRateCounters[viewID] ?? FrameRateCounter(
             outputID: outputID,
+            isProjectorOutput: isProjectorOutput,
             intervalStart: now,
             frameCount: 0,
             measuredFPS: 0,
@@ -725,6 +833,7 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
             latePresentationPercent: 0
         )
         counter.outputID = outputID
+        counter.isProjectorOutput = isProjectorOutput
         counter.targetFramesPerSecond = Double(max(targetFramesPerSecond, 1))
         if let lastPresentedTime = counter.lastPresentedTime {
             let presentationInterval = max(now - lastPresentedTime, 0)
@@ -753,13 +862,10 @@ final class MetalRenderer: NSObject, ObservableObject, MTKViewDelegate {
         counter.lastSampleTime = now
         frameRateCounters[viewID] = counter
         frameRateCounters = frameRateCounters.filter { now - $0.value.lastSampleTime <= 1.5 }
-        let currentMaximum = frameRateCounters.values.map(\.measuredFPS).max() ?? 0
-        var ratesByOutput: [UUID: Double] = [:]
-        var latePercentByOutput: [UUID: Double] = [:]
-        for sample in frameRateCounters.values {
-            ratesByOutput[sample.outputID] = max(ratesByOutput[sample.outputID] ?? 0, sample.measuredFPS)
-            latePercentByOutput[sample.outputID] = max(latePercentByOutput[sample.outputID] ?? 0, sample.latePresentationPercent)
-        }
+        let aggregates = Self.frameRatesByOutput(frameRateCounters)
+        let currentMaximum = aggregates.values.map(\.fps).max() ?? 0
+        let ratesByOutput = aggregates.mapValues(\.fps)
+        let latePercentByOutput = aggregates.mapValues(\.latePercent)
         frameRateLock.unlock()
 
         DispatchQueue.main.async { [weak self] in
@@ -925,6 +1031,11 @@ private final class OutputMetalView: MTKView {
         updatePreviewDrawableSize()
     }
 
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updatePreviewDrawableSize()
+    }
+
     private func updatePreviewDrawableSize() {
         guard !isProjectorView, previewScale < 0.999 else { return }
         let backingScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
@@ -1039,7 +1150,7 @@ final class ProjectorOutputController: NSObject, ObservableObject, NSWindowDeleg
 
     private func applyWindowLevel() {
         for output in windowsByOutputID.values {
-            output.window.level = outputAboveMenuBar ? .screenSaver : .normal
+            output.window.level = outputAboveMenuBar && !output.isVirtual ? .screenSaver : .normal
         }
     }
 
@@ -1103,7 +1214,8 @@ final class ProjectorOutputController: NSObject, ObservableObject, NSWindowDeleg
         outputWindow.isReleasedWhenClosed = false
         outputWindow.isOpaque = true
         outputWindow.backgroundColor = .black
-        outputWindow.level = outputAboveMenuBar ? .screenSaver : .normal
+        // Keep virtual previews below the output picker and other operator controls.
+        outputWindow.level = .normal
         outputWindow.contentAspectRatio = NSSize(width: width, height: height)
         outputWindow.minSize = NSSize(width: 480, height: 270)
         outputWindow.center()
@@ -1113,6 +1225,7 @@ final class ProjectorOutputController: NSObject, ObservableObject, NSWindowDeleg
             outputID: outputID,
             frame: CGRect(origin: .zero, size: windowSize),
             preferredFramesPerSecond: outputFrameRate,
+            isProjectorOutput: true,
             onClose: { [weak self] in self?.close(outputID: outputID) }
         )
         outputView.autoResizeDrawable = false

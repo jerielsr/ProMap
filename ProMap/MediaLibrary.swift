@@ -7,6 +7,202 @@ import CoreAudio
 import Foundation
 import ImageIO
 import Metal
+import MediaToolbox
+
+/// Observes and delays a local AVPlayerItem's PCM audio before it reaches the
+/// player. The processing callback reuses a preallocated ring buffer so it
+/// does not allocate memory on the audio render thread.
+private final class LocalVideoAudioTap {
+    private final class State {
+        private let settingsLock = NSLock()
+        private var delayMilliseconds = 0.0
+        private var meterValue = 0.0
+        private var formatIsSupported = false
+        private var sampleRate = 0.0
+        private var channelCount = 0
+        private var ringCapacity = 0
+        private var ring: [Float] = []
+        private var writeFrame = 0
+        private let capabilityHandler: (Bool, String?) -> Void
+
+        init(delayMilliseconds: Double, capabilityHandler: @escaping (Bool, String?) -> Void) {
+            self.delayMilliseconds = delayMilliseconds
+            self.capabilityHandler = capabilityHandler
+        }
+
+        var level: Double {
+            settingsLock.lock()
+            defer { settingsLock.unlock() }
+            return meterValue
+        }
+
+        func setDelayMilliseconds(_ milliseconds: Double) {
+            settingsLock.lock()
+            delayMilliseconds = milliseconds
+            settingsLock.unlock()
+        }
+
+        func prepare(format: AudioStreamBasicDescription, maxFrames: Int) -> Bool {
+            let isFloat32PCM = format.mFormatID == kAudioFormatLinearPCM
+                && format.mBitsPerChannel == 32
+                && (format.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+            sampleRate = format.mSampleRate
+            channelCount = Int(format.mChannelsPerFrame)
+            formatIsSupported = isFloat32PCM && sampleRate > 0 && channelCount > 0
+            let maxDelayFrames = Int(sampleRate * 0.5)
+            ringCapacity = max(1, maxDelayFrames + max(1, maxFrames) + 1)
+            ring = formatIsSupported ? Array(repeating: 0, count: ringCapacity * channelCount) : []
+            writeFrame = 0
+            settingsLock.lock()
+            meterValue = 0
+            settingsLock.unlock()
+            let supported = formatIsSupported
+            DispatchQueue.main.async {
+                self.capabilityHandler(supported, supported ? nil : "This audio format can't be metered or delayed by ProMap.")
+            }
+            return formatIsSupported
+        }
+
+        func reset() {
+            if !ring.isEmpty { ring.withUnsafeMutableBufferPointer { $0.update(repeating: 0) } }
+            writeFrame = 0
+        }
+
+        func process(_ audioBuffers: UnsafeMutablePointer<AudioBufferList>, frameCount: Int) {
+            guard formatIsSupported, frameCount > 0, ringCapacity > 0 else { return }
+            let buffers = UnsafeMutableAudioBufferListPointer(audioBuffers)
+            var totalSamples = 0
+            var sumSquares = 0.0
+            var channelOffset = 0
+            settingsLock.lock()
+            let delayMilliseconds = self.delayMilliseconds
+            settingsLock.unlock()
+            let delayFrames = min(ringCapacity - 1, max(0, Int(delayMilliseconds * sampleRate / 1_000)))
+
+            for frame in 0..<frameCount {
+                let delayedFrame = (writeFrame - delayFrames + ringCapacity) % ringCapacity
+                channelOffset = 0
+                for buffer in buffers {
+                    let channelsInBuffer = Int(buffer.mNumberChannels)
+                    guard channelsInBuffer > 0,
+                          channelOffset + channelsInBuffer <= channelCount,
+                          let data = buffer.mData else {
+                        channelOffset += channelsInBuffer
+                        continue
+                    }
+                    let samples = data.assumingMemoryBound(to: Float.self)
+                    let availableSampleCount = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
+                    let availableFrameCount = availableSampleCount / channelsInBuffer
+                    guard frame < availableFrameCount else {
+                        channelOffset += channelsInBuffer
+                        continue
+                    }
+                    let frameOffset = frame * channelsInBuffer
+                    for channel in 0..<channelsInBuffer {
+                        let ringIndex = (channelOffset + channel) * ringCapacity
+                        let rawInput = samples[frameOffset + channel]
+                        let input = rawInput.isFinite ? rawInput : 0
+                        let output: Float
+                        if delayFrames == 0 {
+                            output = input
+                        } else {
+                            output = ring[ringIndex + delayedFrame]
+                        }
+                        ring[ringIndex + writeFrame] = input
+                        samples[frameOffset + channel] = output
+                        let value = Double(output)
+                        sumSquares += value * value
+                        totalSamples += 1
+                    }
+                    channelOffset += channelsInBuffer
+                }
+                writeFrame = (writeFrame + 1) % ringCapacity
+            }
+
+            let rms = totalSamples > 0 ? sqrt(sumSquares / Double(totalSamples)) : 0
+            settingsLock.lock()
+            meterValue = min(max(rms, 0), 1)
+            settingsLock.unlock()
+        }
+    }
+
+    private let state: State
+    private var audioMix: AVAudioMix?
+    private let capabilityHandler: (Bool, String?) -> Void
+
+    init(delayMilliseconds: Double, capabilityHandler: @escaping (Bool, String?) -> Void) {
+        self.capabilityHandler = capabilityHandler
+        state = State(delayMilliseconds: delayMilliseconds, capabilityHandler: capabilityHandler)
+    }
+
+    var level: Double { state.level }
+
+    func setDelayMilliseconds(_ milliseconds: Double) {
+        state.setDelayMilliseconds(milliseconds)
+    }
+
+    func install(on item: AVPlayerItem, asset: AVAsset) {
+        asset.loadValuesAsynchronously(forKeys: ["tracks"]) { [weak self, weak item] in
+            guard let self, let item else { return }
+            var error: NSError?
+            guard asset.statusOfValue(forKey: "tracks", error: &error) == .loaded,
+                  let track = asset.tracks(withMediaType: .audio).first else {
+                DispatchQueue.main.async { self.capabilityHandler(false, "No audio track was found in this file.") }
+                return
+            }
+
+            var tap: MTAudioProcessingTap?
+            let retainedState = Unmanaged.passRetained(self.state)
+            var callbacks = MTAudioProcessingTapCallbacks(
+                version: kMTAudioProcessingTapCallbacksVersion_0,
+                clientInfo: retainedState.toOpaque(),
+                init: { _, clientInfo, tapStorageOut in tapStorageOut.pointee = clientInfo },
+                finalize: { tap in
+                    let storage = MTAudioProcessingTapGetStorage(tap)
+                    Unmanaged<State>.fromOpaque(storage).release()
+                },
+                prepare: { tap, maxFrames, processingFormat in
+                    let storage = MTAudioProcessingTapGetStorage(tap)
+                    let state = Unmanaged<State>.fromOpaque(storage).takeUnretainedValue()
+                    _ = state.prepare(format: processingFormat.pointee, maxFrames: Int(maxFrames))
+                },
+                unprepare: { _ in },
+                process: { tap, numberFrames, tapFlags, bufferList, numberFramesOut, flagsOut in
+                    let status = MTAudioProcessingTapGetSourceAudio(tap, numberFrames, bufferList, flagsOut, nil, numberFramesOut)
+                    guard status == noErr else {
+                        numberFramesOut.pointee = 0
+                        return
+                    }
+                    let storage = MTAudioProcessingTapGetStorage(tap)
+                    let state = Unmanaged<State>.fromOpaque(storage).takeUnretainedValue()
+                    if tapFlags & kMTAudioProcessingTapFlag_StartOfStream != 0 { state.reset() }
+                    state.process(bufferList, frameCount: Int(numberFramesOut.pointee))
+                }
+            )
+            let status = MTAudioProcessingTapCreate(
+                kCFAllocatorDefault,
+                &callbacks,
+                kMTAudioProcessingTapCreationFlag_PreEffects,
+                &tap
+            )
+            guard status == noErr, let tap else {
+                retainedState.release()
+                DispatchQueue.main.async { self.capabilityHandler(false, "ProMap couldn't process this file's audio format.") }
+                return
+            }
+
+            let parameters = AVMutableAudioMixInputParameters(track: track)
+            parameters.audioTapProcessor = tap
+            let mix = AVMutableAudioMix()
+            mix.inputParameters = [parameters]
+            DispatchQueue.main.async {
+                self.audioMix = mix
+                item.audioMix = mix
+                self.capabilityHandler(true, nil)
+            }
+        }
+    }
+}
 
 enum MediaImportError: LocalizedError {
     case unsupportedFile(URL)
@@ -227,11 +423,20 @@ final class MediaSource: ObservableObject, Identifiable {
     private let syphonReceiver: SyphonReceiver?
 
     @Published private(set) var isPlaying = false
+    @Published private(set) var isLooping = false
+    @Published private(set) var playbackTimeSeconds = 0.0
+    @Published private(set) var playbackDurationSeconds = 0.0
+    @Published private(set) var playbackRate = 1.0
     @Published private(set) var isAudioMuted = true
     @Published private(set) var audioVolume = 1.0
     @Published private(set) var audioDelayMilliseconds = 0.0
     @Published private(set) var audioMeterLevel = 0.0
+    @Published private(set) var isAudioDelaySupported = true
+    @Published private(set) var audioDelayStatusMessage: String?
     private var masterAudioVolume = 1.0
+    private var localVideoAudioTap: LocalVideoAudioTap?
+    private var playbackEndObserver: NSObjectProtocol?
+    private var playbackProgressObserver: Any?
     @Published private(set) var isCaptureConnected = true
     @Published private(set) var captureFormatLabel = "Device Default"
     @Published private(set) var capturePreviewImage: NSImage?
@@ -287,7 +492,7 @@ final class MediaSource: ObservableObject, Identifiable {
         return "capture://\(encodedID)"
     }
 
-    init(url: URL) throws {
+    init(url: URL, monitorLocalVideoAudio: Bool = true) throws {
         let fileExtension = url.pathExtension.lowercased()
         self.url = url
 
@@ -318,6 +523,7 @@ final class MediaSource: ObservableObject, Identifiable {
             ndiReceiver = nil
             syphonReceiver = nil
         } else if Self.videoExtensions.contains(fileExtension) {
+            let delayKey = Self.videoAudioPreferenceKey(for: url)
             let item = AVPlayerItem(url: url)
             let output = AVPlayerItemVideoOutput(pixelBufferAttributes: [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
@@ -344,6 +550,44 @@ final class MediaSource: ObservableObject, Identifiable {
             captureFrameStore = nil
             ndiReceiver = nil
             syphonReceiver = nil
+            isLooping = UserDefaults.standard.bool(forKey: Self.videoLoopPreferenceKey(for: url))
+            let savedPlaybackRate = UserDefaults.standard.object(forKey: Self.videoPlaybackRatePreferenceKey(for: url)) as? Double ?? 1
+            playbackRate = min(max(savedPlaybackRate.isFinite ? savedPlaybackRate : 1, 0.25), 2)
+            playbackEndObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime,
+                object: item,
+                queue: .main
+            ) { [weak self] _ in
+                guard let self, let player = self.player else { return }
+                guard self.isPlaying else { return }
+                guard self.isLooping else { self.finishPlayback(); return }
+                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+                    guard let self, finished else { return }
+                    guard self.isPlaying else { return }
+                    guard self.isLooping else { self.finishPlayback(); return }
+                    self.playbackTimeSeconds = 0
+                    player.playImmediately(atRate: Float(self.playbackRate))
+                }
+            }
+            item.asset.loadValuesAsynchronously(forKeys: ["duration"]) { [weak self, weak item] in
+                guard let self, let item else { return }
+                var error: NSError?
+                guard item.asset.statusOfValue(forKey: "duration", error: &error) == .loaded else { return }
+                let duration = item.duration.seconds
+                guard duration.isFinite, duration > 0 else { return }
+                DispatchQueue.main.async { self.playbackDurationSeconds = duration }
+            }
+            if monitorLocalVideoAudio {
+                let savedDelay = min(max(UserDefaults.standard.double(forKey: delayKey), 0), 500)
+                audioDelayMilliseconds = savedDelay
+                audioDelayStatusMessage = "Checking clip audio…"
+                let audioTap = LocalVideoAudioTap(delayMilliseconds: savedDelay) { [weak self] supported, message in
+                    self?.isAudioDelaySupported = supported
+                    self?.audioDelayStatusMessage = message
+                }
+                localVideoAudioTap = audioTap
+                audioTap.install(on: item, asset: item.asset)
+            }
         } else {
             throw MediaImportError.unsupportedFile(url)
         }
@@ -509,6 +753,8 @@ final class MediaSource: ObservableObject, Identifiable {
     }
 
     deinit {
+        if let playbackEndObserver { NotificationCenter.default.removeObserver(playbackEndObserver) }
+        stopPlaybackProgressObservation()
         stopCapture()
     }
 
@@ -517,21 +763,81 @@ final class MediaSource: ObservableObject, Identifiable {
         if isPlaying {
             player.pause()
             isPlaying = false
+            playbackTimeSeconds = max(player.currentTime().seconds, 0)
+            stopPlaybackProgressObservation()
         } else {
-            player.play()
             isPlaying = true
+            let currentTime = player.currentTime().seconds
+            let duration = player.currentItem?.duration.seconds ?? 0
+            if currentTime.isFinite, duration.isFinite, duration > 0, currentTime >= duration - 0.05 {
+                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+                    guard let self, finished, self.isPlaying else { return }
+                    self.playbackTimeSeconds = 0
+                    player.playImmediately(atRate: Float(self.playbackRate))
+                }
+            } else {
+                player.playImmediately(atRate: Float(playbackRate))
+            }
+            startPlaybackProgressObservation()
         }
+    }
+
+    func setLooping(_ looping: Bool, persistPreference: Bool = true) {
+        guard kind == .video, isLooping != looping else { return }
+        isLooping = looping
+        if persistPreference {
+            UserDefaults.standard.set(looping, forKey: Self.videoLoopPreferenceKey(for: url))
+        }
+    }
+
+    func setPlaybackRate(_ rate: Double, persistPreference: Bool = true) {
+        guard kind == .video else { return }
+        let bounded = min(max(rate.isFinite ? rate : 1, 0.25), 2)
+        guard abs(playbackRate - bounded) > 0.0001 else { return }
+        playbackRate = bounded
+        if isPlaying { player?.playImmediately(atRate: Float(bounded)) }
+        if persistPreference {
+            UserDefaults.standard.set(bounded, forKey: Self.videoPlaybackRatePreferenceKey(for: url))
+        }
+    }
+
+    func seekPlayback(to seconds: Double) {
+        guard kind == .video, let player, seconds.isFinite else { return }
+        let upperBound = playbackDurationSeconds > 0 ? playbackDurationSeconds : max(seconds, 0)
+        let bounded = min(max(seconds, 0), upperBound)
+        playbackTimeSeconds = bounded
+        player.seek(
+            to: CMTime(seconds: bounded, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        ) { [weak self] finished in
+            guard let self, finished, self.isPlaying else { return }
+            player.playImmediately(atRate: Float(self.playbackRate))
+        }
+    }
+
+    func seekPlayback(by seconds: Double) {
+        seekPlayback(to: playbackTimeSeconds + seconds)
     }
 
     func stop() {
         player?.pause()
         player?.seek(to: .zero)
         isPlaying = false
+        playbackTimeSeconds = 0
+        stopPlaybackProgressObservation()
     }
 
-    func makeSilentPreviewCopy(isPlaying: Bool, at seconds: Double) -> MediaSource? {
-        guard kind == .video, let copy = try? MediaSource(url: url) else { return nil }
+    func makeSilentPreviewCopy(
+        isPlaying: Bool,
+        at seconds: Double,
+        isLooping: Bool? = nil,
+        playbackRate: Double? = nil
+    ) -> MediaSource? {
+        guard kind == .video, let copy = try? MediaSource(url: url, monitorLocalVideoAudio: false) else { return nil }
         copy.restoreAudio(isMuted: true, volume: 0)
+        copy.setLooping(isLooping ?? self.isLooping, persistPreference: false)
+        copy.setPlaybackRate(playbackRate ?? self.playbackRate, persistPreference: false)
         copy.restorePlayback(isPlaying: isPlaying, at: seconds)
         return copy
     }
@@ -575,19 +881,73 @@ final class MediaSource: ObservableObject, Identifiable {
         guard audioDelayMilliseconds != bounded else { return }
         audioDelayMilliseconds = bounded
         ndiReceiver?.setAudioDelayMilliseconds(bounded)
+        localVideoAudioTap?.setDelayMilliseconds(bounded)
         if kind == .ndi, let reference = ndiSourceReference {
             UserDefaults.standard.set(bounded, forKey: Self.ndiAudioPreferenceKey("delay", reference: reference))
+        } else if kind == .video {
+            UserDefaults.standard.set(bounded, forKey: Self.videoAudioPreferenceKey(for: url))
         }
     }
 
     func refreshAudioMeter() {
-        guard kind == .ndi else { return }
-        let level = ndiReceiver?.audioMeterLevel ?? 0
+        let level: Double
+        switch kind {
+        case .ndi:
+            level = ndiReceiver?.audioMeterLevel ?? 0
+        case .video:
+            level = localVideoAudioTap?.level ?? 0
+        default:
+            return
+        }
         if abs(audioMeterLevel - level) > 0.008 { audioMeterLevel = level }
     }
 
     private static func ndiAudioPreferenceKey(_ preference: String, reference: String) -> String {
         "ndiAudio.\(preference).\(reference)"
+    }
+
+    private static func videoAudioPreferenceKey(for url: URL) -> String {
+        let encodedPath = Data(url.standardizedFileURL.path.utf8).base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return "videoAudio.delay.\(encodedPath)"
+    }
+
+    private static func videoLoopPreferenceKey(for url: URL) -> String {
+        "videoPlayback.loop.\(Data(url.standardizedFileURL.path.utf8).base64EncodedString())"
+    }
+
+    private static func videoPlaybackRatePreferenceKey(for url: URL) -> String {
+        "videoPlayback.rate.\(Data(url.standardizedFileURL.path.utf8).base64EncodedString())"
+    }
+
+    private func startPlaybackProgressObservation() {
+        guard playbackProgressObserver == nil, let player else { return }
+        playbackProgressObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
+            queue: .main
+        ) { [weak self] time in
+            guard let self, let player = self.player else { return }
+            let seconds = time.seconds
+            if seconds.isFinite { self.playbackTimeSeconds = max(seconds, 0) }
+            let duration = player.currentItem?.duration.seconds ?? 0
+            if duration.isFinite, duration > 0 { self.playbackDurationSeconds = duration }
+        }
+    }
+
+    private func stopPlaybackProgressObservation() {
+        guard let playbackProgressObserver, let player else { return }
+        player.removeTimeObserver(playbackProgressObserver)
+        self.playbackProgressObserver = nil
+    }
+
+    private func finishPlayback() {
+        isPlaying = false
+        if playbackDurationSeconds.isFinite, playbackDurationSeconds > 0 {
+            playbackTimeSeconds = playbackDurationSeconds
+        }
+        stopPlaybackProgressObservation()
     }
 
     func setCaptureFormat(_ option: CaptureFormatOption) {
@@ -745,13 +1105,16 @@ final class MediaSource: ObservableObject, Identifiable {
     func restorePlayback(isPlaying: Bool, at seconds: Double) {
         guard let player else { return }
         let position = max(seconds.isFinite ? seconds : 0, 0)
-        player.seek(to: CMTime(seconds: position, preferredTimescale: 600))
-        if isPlaying {
-            player.play()
-        } else {
-            player.pause()
-        }
+        playbackTimeSeconds = position
+        let duration = player.currentItem?.duration.seconds ?? 0
+        if duration.isFinite, duration > 0 { playbackDurationSeconds = duration }
         self.isPlaying = isPlaying
+        if isPlaying { startPlaybackProgressObservation() } else { stopPlaybackProgressObservation() }
+        player.seek(to: CMTime(seconds: position, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] finished in
+            guard let self, finished, self.isPlaying else { return }
+            player.playImmediately(atRate: Float(self.playbackRate))
+        }
+        if !isPlaying { player.pause() }
     }
 }
 
@@ -1071,7 +1434,7 @@ final class MediaLibrary: ObservableObject {
 
 struct RenderLayer: Identifiable {
     var id: UUID
-    let source: MediaSource
+    var source: MediaSource
     var name: String?
     var isEnabled: Bool
     var isSolo: Bool
@@ -1120,10 +1483,12 @@ struct RenderLayer: Identifiable {
             contentTransform: contentTransform,
             isPlaying: source.isPlaying,
             playbackTime: currentTime.isFinite ? max(currentTime, 0) : 0,
+            playbackRate: source.kind == .video ? source.playbackRate : nil,
             effectStack: effectStack,
             isAudioMuted: source.isAudioMuted,
             audioVolume: source.audioVolume,
-            audioDelayMilliseconds: source.kind == .ndi ? source.audioDelayMilliseconds : nil
+            audioDelayMilliseconds: source.kind == .ndi || source.kind == .video ? source.audioDelayMilliseconds : nil,
+            isLooping: source.kind == .video ? source.isLooping : nil
         )
     }
 }
@@ -1136,6 +1501,7 @@ struct RenderSnapshot {
     let isBlackout: Bool
     let outputIntensity: Double
     let calibrationPattern: CalibrationPattern
+    let surfaceTransitionOpacityByID: [UUID: Double]
 }
 
 private struct SurfaceGeometrySnapshot: Equatable {
@@ -1179,6 +1545,7 @@ final class RenderSession: ObservableObject {
     private var renderBlackout = false
     private var renderOutputIntensity = 1.0
     private var renderCalibrationPattern: CalibrationPattern = .off
+    private var renderSurfaceTransitionOpacityByID: [UUID: Double] = [:]
     private var sceneTransitionID = UUID()
     private var geometryUndoHistory: [[SurfaceGeometrySnapshot]] = []
     private var geometryRedoHistory: [[SurfaceGeometrySnapshot]] = []
@@ -1191,10 +1558,30 @@ final class RenderSession: ObservableObject {
         lock.unlock()
     }
 
-    func addLayer(source: MediaSource) {
+    @discardableResult
+    func addLayer(source: MediaSource) -> UUID {
         var updated = layers
-        updated.append(RenderLayer(source: source))
+        let layer = RenderLayer(source: source)
+        updated.append(layer)
         commit(layers: updated, surfaces: surfaces)
+        return layer.id
+    }
+
+    func setLayerSource(_ source: MediaSource, for layerID: UUID) {
+        var updated = layers
+        guard let index = updated.firstIndex(where: { $0.id == layerID }),
+              !updated[index].isLocked,
+              updated[index].source.reference != source.reference else { return }
+        let previousSource = updated[index].source
+        let previousReference = previousSource.reference
+        updated[index].source = source
+        commit(layers: updated, surfaces: surfaces)
+        if source.kind == .video && !source.isPlaying { source.togglePlayback() }
+        let remainsAssigned = updated.contains(where: { $0.source.reference == previousReference })
+            || surfaces.contains(where: { !$0.usesLayerStack && $0.sourcePath == previousReference })
+        if !remainsAssigned, previousSource.kind == .video {
+            previousSource.restorePlayback(isPlaying: false, at: previousSource.playbackTimeSeconds)
+        }
     }
 
     func renameLayer(_ layerID: UUID, to name: String) {
@@ -1942,7 +2329,11 @@ final class RenderSession: ObservableObject {
                 surface: surface,
                 audioMuted: source.isAudioMuted,
                 audioVolume: source.audioVolume,
-                audioDelayMilliseconds: source.kind == .ndi ? source.audioDelayMilliseconds : nil
+                audioDelayMilliseconds: source.kind == .ndi || source.kind == .video ? source.audioDelayMilliseconds : nil,
+                isLooping: source.kind == .video ? source.isLooping : nil,
+                isPlaying: source.kind == .video ? source.isPlaying : nil,
+                playbackTime: source.kind == .video ? source.playbackTimeSeconds : nil,
+                playbackRate: source.kind == .video ? source.playbackRate : nil
             )
         }
         let scene = ScenePreset(
@@ -1999,7 +2390,13 @@ final class RenderSession: ObservableObject {
         recallScene(scenes[nextIndex], sources: sources)
     }
 
-    func recallScene(_ scene: ScenePreset, sources: [MediaSource], transitionDuration: TimeInterval = 0.35) {
+    func recallScene(
+        _ scene: ScenePreset,
+        sources: [MediaSource],
+        transitionDuration: TimeInterval = 0.35,
+        transitionStyle: SceneTransitionStyle = .dissolve,
+        transitionCurve: SceneTransitionCurve = .linear
+    ) {
         setSourceCatalog(sources)
         let previousLayers = layers
         let currentLockStateByID = Dictionary(layers.map { ($0.id, $0.isLocked) }, uniquingKeysWith: { _, latest in latest })
@@ -2033,6 +2430,23 @@ final class RenderSession: ObservableObject {
                 .prefix(SurfaceEffect.maximumStackSize)
                 .map { $0.sanitized() }
         }
+        let targetSurfaceStateByID = Dictionary(
+            scene.surfaces.map { ($0.surfaceID, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        let transitioningSurfaceIDs = Set(surfaces.compactMap { current -> UUID? in
+            guard let target = targetSurfaceStateByID[current.id] else { return nil }
+            let hasVisualChange = current.sourcePath != target.sourcePath
+                || current.usesLayerStack != target.usesLayerStack
+                || current.isVisible != target.isVisible
+                || current.isBlackout != target.isBlackout
+                || current.isMaskInverted != target.isMaskInverted
+                || current.brightness != target.brightness
+                || current.opacity != target.opacity
+                || current.colorCorrection != target.colorCorrection
+                || current.effectStack != target.effectStack
+            return hasVisualChange ? current.id : nil
+        })
         currentSceneID = scene.id
 
         let targetAudioByPath = Dictionary(
@@ -2042,9 +2456,13 @@ final class RenderSession: ObservableObject {
                           state.audioMuted != nil || state.audioVolume != nil || state.audioDelayMilliseconds != nil else { return nil }
                     return (path, SavedLayerState(
                         sourcePath: path,
+                        isPlaying: state.isPlaying ?? false,
+                        playbackTime: state.playbackTime ?? 0,
+                        playbackRate: state.playbackRate,
                         isAudioMuted: state.audioMuted,
                         audioVolume: state.audioVolume,
-                        audioDelayMilliseconds: state.audioDelayMilliseconds
+                        audioDelayMilliseconds: state.audioDelayMilliseconds,
+                        isLooping: state.isLooping
                     ))
                 },
             uniquingKeysWith: { first, _ in first }
@@ -2059,6 +2477,20 @@ final class RenderSession: ObservableObject {
             return state.sourcePath
         })
         let previousAudioPaths = Set(previousLayers.map { $0.source.reference }).union(previousSurfaceAudioPaths)
+        let previousVideoPaths = Set(previousLayers.compactMap { $0.source.kind == .video ? $0.source.reference : nil })
+            .union(surfaces.compactMap { surface -> String? in
+                guard !surface.usesLayerStack,
+                      let path = surface.sourcePath,
+                      sourcesByPath[path]?.kind == .video else { return nil }
+                return path
+            })
+        let activeVideoPaths = Set(restoredLayers.compactMap { $0.source.kind == .video ? $0.source.reference : nil })
+            .union(restoredSurfaces.compactMap { surface -> String? in
+                guard !surface.usesLayerStack,
+                      let path = surface.sourcePath,
+                      sourcesByPath[path]?.kind == .video else { return nil }
+                return path
+            })
         let audioTracks = sources.compactMap { source -> (
             source: MediaSource,
             start: Double,
@@ -2084,7 +2516,9 @@ final class RenderSession: ObservableObject {
         let transitionID = UUID()
         sceneTransitionID = transitionID
         let targetBlackout = scene.isBlackout ?? isBlackout
-        let shouldFade = transitionDuration > 0 && (!layers.isEmpty || !restoredLayers.isEmpty || !audioTracks.isEmpty)
+        let effectiveTransitionDuration = transitionStyle == .cut ? 0 : max(transitionDuration, 0)
+        let shouldFade = effectiveTransitionDuration > 0
+            && (!layers.isEmpty || !restoredLayers.isEmpty || !audioTracks.isEmpty || !transitioningSurfaceIDs.isEmpty)
         if shouldFade {
             for track in audioTracks {
                 track.source.restoreAudio(isMuted: false, volume: track.start)
@@ -2096,15 +2530,23 @@ final class RenderSession: ObservableObject {
         }
         for saved in scene.layers {
             guard let source = sourcesByPath[saved.sourcePath] else { continue }
+            if let isLooping = saved.isLooping { source.setLooping(isLooping) }
+            if let playbackRate = saved.playbackRate { source.setPlaybackRate(playbackRate) }
             source.restorePlayback(isPlaying: saved.isPlaying, at: saved.playbackTime)
             if let delay = saved.audioDelayMilliseconds { source.setAudioDelayMilliseconds(delay) }
         }
         for state in scene.surfaces {
             guard let path = state.sourcePath, let source = sourcesByPath[path] else { continue }
             if let delay = state.audioDelayMilliseconds { source.setAudioDelayMilliseconds(delay) }
+            if let isLooping = state.isLooping { source.setLooping(isLooping) }
+            if let playbackRate = state.playbackRate { source.setPlaybackRate(playbackRate) }
+            if let isPlaying = state.isPlaying {
+                source.restorePlayback(isPlaying: isPlaying, at: state.playbackTime ?? source.playbackTimeSeconds)
+            }
         }
         guard shouldFade else {
             commit(layers: restoredLayers, surfaces: restoredSurfaces, blackout: targetBlackout)
+            stopVideoPlayback(previousPaths: previousVideoPaths, keeping: activeVideoPaths, sourcesByPath: sourcesByPath)
             return
         }
 
@@ -2149,32 +2591,68 @@ final class RenderSession: ObservableObject {
         let frameCount = 18
         for frame in 0...frameCount {
             let progress = Double(frame) / Double(frameCount)
-            DispatchQueue.main.asyncAfter(deadline: .now() + transitionDuration * progress) { [weak self] in
+            let transitionProgress = transitionCurve == .easeInOut
+                ? progress * progress * (3 - 2 * progress)
+                : progress
+            DispatchQueue.main.asyncAfter(deadline: .now() + effectiveTransitionDuration * progress) { [weak self] in
                 guard let self, self.sceneTransitionID == transitionID else { return }
                 if frame == frameCount {
                     for track in audioTracks {
                         track.source.restoreAudio(isMuted: track.targetMuted, volume: track.targetVolume)
                     }
-                    self.commit(layers: restoredLayers, surfaces: restoredSurfaces, blackout: targetBlackout)
-                    let activePaths = Set(restoredLayers.map { $0.source.reference })
-                    for layer in previousLayers where !activePaths.contains(layer.source.reference) {
-                        layer.source.restorePlayback(isPlaying: false, at: layer.source.player?.currentTime().seconds ?? 0)
-                    }
+                    self.commit(
+                        layers: restoredLayers,
+                        surfaces: restoredSurfaces,
+                        blackout: targetBlackout,
+                        surfaceTransitionOpacityByID: [:],
+                        isSceneTransitionFrame: true
+                    )
+                    self.stopVideoPlayback(previousPaths: previousVideoPaths, keeping: activeVideoPaths, sourcesByPath: sourcesByPath)
                     return
                 }
                 for track in audioTracks {
-                    let volume = track.start + (track.end - track.start) * progress
+                    let fadeOut = max(0, 1 - transitionProgress * 2)
+                    let fadeIn = max(0, (transitionProgress - 0.5) * 2)
+                    let volume = transitionStyle == .dipToBlack
+                        ? track.start * fadeOut + track.end * fadeIn
+                        : track.start + (track.end - track.start) * transitionProgress
                     track.source.setAudioVolume(volume)
                 }
                 let transitioningLayers = tracks.map { track -> RenderLayer in
                     var layer = track.layer
-                    layer.opacity = track.start + (track.end - track.start) * progress
+                    let fadeOut = max(0, 1 - transitionProgress * 2)
+                    let fadeIn = max(0, (transitionProgress - 0.5) * 2)
+                    layer.opacity = transitionStyle == .dipToBlack
+                        ? track.start * fadeOut + track.end * fadeIn
+                        : track.start + (track.end - track.start) * transitionProgress
                     layer.isEnabled = track.transitionEnabled
                     layer.isSolo = transitionUsesSolo && transitionSoloLayerIDs.contains(layer.id)
                     return layer
                 }
-                self.commit(layers: transitioningLayers, surfaces: restoredSurfaces)
+                let surfaceOpacity = transitionProgress < 0.5
+                    ? 1 - transitionProgress * 2
+                    : (transitionProgress - 0.5) * 2
+                let transitioningSurfaceOpacityByID = Dictionary(uniqueKeysWithValues: transitioningSurfaceIDs.map {
+                    ($0, min(max(surfaceOpacity, 0), 1))
+                })
+                self.commit(
+                    layers: transitioningLayers,
+                    surfaces: transitionProgress < 0.5 ? surfaces : restoredSurfaces,
+                    surfaceTransitionOpacityByID: transitioningSurfaceOpacityByID,
+                    isSceneTransitionFrame: true
+                )
             }
+        }
+    }
+
+    private func stopVideoPlayback(
+        previousPaths: Set<String>,
+        keeping activePaths: Set<String>,
+        sourcesByPath: [String: MediaSource]
+    ) {
+        for path in previousPaths.subtracting(activePaths) {
+            guard let source = sourcesByPath[path], source.kind == .video else { continue }
+            source.restorePlayback(isPlaying: false, at: source.playbackTimeSeconds)
         }
     }
 
@@ -2209,13 +2687,29 @@ final class RenderSession: ObservableObject {
     func stageScene(_ scene: ScenePreset, sources: [MediaSource]) {
         stopStagedPreviewSources()
         let savedLayerByPath = Dictionary(scene.layers.map { ($0.sourcePath, $0) }, uniquingKeysWith: { first, _ in first })
+        let savedSurfaceByPath = Dictionary(
+            scene.surfaces.compactMap { state -> (String, SceneSurfaceState)? in
+                guard let path = state.sourcePath,
+                      state.isLooping != nil || state.isPlaying != nil || state.playbackTime != nil || state.playbackRate != nil else { return nil }
+                return (path, state)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         let referencedPaths = Set(scene.layers.map(\.sourcePath) + scene.surfaces.compactMap(\.sourcePath))
         let stagedSourceEntries = sources.map { source -> (String, MediaSource) in
             guard referencedPaths.contains(source.reference) else { return (source.reference, source) }
             let savedLayer = savedLayerByPath[source.reference]
-            let isPlaying = savedLayer?.isPlaying ?? source.isPlaying
-            let playbackTime = savedLayer?.playbackTime ?? source.player?.currentTime().seconds ?? 0
-            guard let stagedSource = source.makeSilentPreviewCopy(isPlaying: isPlaying, at: playbackTime) else {
+            let savedSurface = savedSurfaceByPath[source.reference]
+            let isPlaying = savedLayer?.isPlaying ?? savedSurface?.isPlaying ?? source.isPlaying
+            let playbackTime = savedLayer?.playbackTime ?? savedSurface?.playbackTime ?? source.playbackTimeSeconds
+            let isLooping = savedLayer?.isLooping ?? savedSurface?.isLooping
+            let playbackRate = savedLayer?.playbackRate ?? savedSurface?.playbackRate
+            guard let stagedSource = source.makeSilentPreviewCopy(
+                isPlaying: isPlaying,
+                at: playbackTime,
+                isLooping: isLooping,
+                playbackRate: playbackRate
+            ) else {
                 return (source.reference, source)
             }
             stagedPreviewSources.append(stagedSource)
@@ -2270,6 +2764,8 @@ final class RenderSession: ObservableObject {
             guard let source = sourcesByPath[saved.sourcePath] else { return nil }
             source.restoreAudio(isMuted: saved.isAudioMuted ?? true, volume: saved.audioVolume ?? 1)
             if let delay = saved.audioDelayMilliseconds { source.setAudioDelayMilliseconds(delay) }
+            if let isLooping = saved.isLooping { source.setLooping(isLooping) }
+            if let playbackRate = saved.playbackRate { source.setPlaybackRate(playbackRate) }
             source.restorePlayback(isPlaying: saved.isPlaying, at: saved.playbackTime)
             return RenderLayer(
                 id: saved.id,
@@ -2287,6 +2783,11 @@ final class RenderSession: ObservableObject {
             guard let source = sourcesByPath[saved.sourcePath] else { continue }
             source.restoreAudio(isMuted: saved.audioMuted, volume: saved.audioVolume)
             source.setAudioDelayMilliseconds(saved.audioDelayMilliseconds)
+            if let isLooping = saved.isLooping { source.setLooping(isLooping) }
+            if let playbackRate = saved.playbackRate { source.setPlaybackRate(playbackRate) }
+            if let isPlaying = saved.isPlaying, let playbackTime = saved.playbackTime {
+                source.restorePlayback(isPlaying: isPlaying, at: playbackTime)
+            }
         }
         commit(layers: restoredLayers, surfaces: validSurfaces.isEmpty ? [.main] : validSurfaces)
         scenes = document.scenes
@@ -2340,7 +2841,8 @@ final class RenderSession: ObservableObject {
             outputs: renderOutputs,
             isBlackout: renderBlackout,
             outputIntensity: renderOutputIntensity,
-            calibrationPattern: renderCalibrationPattern
+            calibrationPattern: renderCalibrationPattern,
+            surfaceTransitionOpacityByID: renderSurfaceTransitionOpacityByID
         )
     }
 
@@ -2456,11 +2958,17 @@ final class RenderSession: ObservableObject {
         layers: [RenderLayer],
         surfaces: [ProjectionSurface],
         blackout: Bool? = nil,
-        calibration: CalibrationPattern? = nil
+        calibration: CalibrationPattern? = nil,
+        surfaceTransitionOpacityByID: [UUID: Double] = [:],
+        isSceneTransitionFrame: Bool = false
     ) {
+        if !isSceneTransitionFrame {
+            sceneTransitionID = UUID()
+        }
         lock.lock()
         renderLayers = layers
         renderSurfaces = surfaces
+        renderSurfaceTransitionOpacityByID = surfaceTransitionOpacityByID
         if let blackout { renderBlackout = blackout }
         if let calibration { renderCalibrationPattern = calibration }
         let currentBlackout = renderBlackout

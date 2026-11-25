@@ -325,6 +325,7 @@
 				isa = XCBuildConfiguration;
 				buildSettings = {
 					BUNDLE_LOADER = "$(TEST_HOST)";
+					FRAMEWORK_SEARCH_PATHS = ("$(inherited)", "$(SRCROOT)/ThirdParty/Syphon", );
 					GENERATE_INFOPLIST_FILE = YES;
 					ONLY_ACTIVE_ARCH = YES;
 					MACOSX_DEPLOYMENT_TARGET = 12.0;
@@ -341,6 +342,7 @@
 				isa = XCBuildConfiguration;
 				buildSettings = {
 					BUNDLE_LOADER = "$(TEST_HOST)";
+					FRAMEWORK_SEARCH_PATHS = ("$(inherited)", "$(SRCROOT)/ThirdParty/Syphon", );
 					GENERATE_INFOPLIST_FILE = YES;
 					MACOSX_DEPLOYMENT_TARGET = 12.0;
 					PRODUCT_BUNDLE_IDENTIFIER = org.promap.tests;

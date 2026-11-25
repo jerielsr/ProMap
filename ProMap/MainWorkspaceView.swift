@@ -36,10 +36,12 @@ struct MainWorkspaceView: View {
     @StateObject private var syphonService = SyphonService.shared
     @StateObject private var syphonOutputService = SyphonOutputService.shared
     @AppStorage("outputAboveMenuBar") private var outputAboveMenuBar = false
-    @AppStorage("outputFrameRate") private var outputFrameRate = 60
-    @AppStorage("previewFrameRate") private var previewFrameRate = 15
-    @AppStorage("previewRenderScale") private var previewRenderScale = 1.0
+    @AppStorage("outputFrameRate") private var outputFrameRate = 30
+    @AppStorage("previewFrameRate") private var previewFrameRate = 10
+    @AppStorage("previewRenderScale") private var previewRenderScale = 0.5
     @AppStorage("sceneTransitionDuration") private var sceneTransitionDuration = 0.35
+    @AppStorage("sceneTransitionStyle") private var sceneTransitionStyle = SceneTransitionStyle.dissolve.rawValue
+    @AppStorage("sceneTransitionCurve") private var sceneTransitionCurve = SceneTransitionCurve.easeInOut.rawValue
     @AppStorage("masterOutputIntensity") private var masterOutputIntensity = 1.0
     @AppStorage("masterAudioVolume") private var masterAudioVolume = 1.0
     @AppStorage("audioOutputDeviceUID") private var audioOutputDeviceUID = ""
@@ -70,15 +72,17 @@ struct MainWorkspaceView: View {
     @State private var selectedOutputMaskPathID: UUID?
     @State private var selectedOutputMaskPointIndex: Int?
     @State private var selectedMediaSourceID: UUID?
+    @State private var selectedLayerID: UUID?
     @State private var selectedWorkspaceArea: WorkspaceArea = .live
     @State private var selectedRecallSceneID: UUID?
-    @State private var showsOutputPicker = false
+    @State private var showsCustomVirtualCanvas = false
     @State private var customVirtualWidth = "1920"
     @State private var customVirtualHeight = "1080"
     @State private var sceneNameDraft: String?
     @State private var pendingNDIShowLayerReferences = Set<String>()
     @State private var pendingSyphonShowLayerReferences = Set<String>()
     @State private var previewSceneID: UUID?
+    @State private var takeButtonPulse = false
     @State private var activeCueStartedAt: Date?
     @State private var newSceneName = "Scene 1"
     @State private var checkedAutosave = false
@@ -133,7 +137,9 @@ struct MainWorkspaceView: View {
         return presets
     }
 
-    var body: some View {
+    var body: some View { housekeepingLifecycle }
+
+    private var workspaceContent: some View {
         VStack(spacing: 0) {
             header
             workspaceNavigation
@@ -159,6 +165,16 @@ struct MainWorkspaceView: View {
         .background(Palette.background)
         .foregroundColor(Palette.primaryText)
         .preferredColorScheme(.dark)
+        .background {
+            Color.clear
+        }
+    }
+
+    private var presentationLayer: some View {
+        workspaceContent
+        .sheet(isPresented: $showsCustomVirtualCanvas) {
+            customVirtualCanvasSheet
+        }
         .sheet(isPresented: $isSavingEffectPreset) {
             VStack(alignment: .leading, spacing: 12) {
                 Text("Save Effect Preset")
@@ -181,6 +197,10 @@ struct MainWorkspaceView: View {
             .padding(20)
             .frame(width: 360)
         }
+    }
+
+    private var startupLifecycle: some View {
+        presentationLayer
         .onAppear {
             session.setSourceCatalog(library.sources)
             previewSession.setSourceCatalog(library.sources)
@@ -201,45 +221,7 @@ struct MainWorkspaceView: View {
             configureNDIOutput()
             configureSyphonOutput()
             midiControl.updateScenes(session.scenes)
-            externalControl.statusProvider = { [weak session, weak output] in
-                let outputOpen = output?.activeOutputTitle != nil
-                let isBlackedOut = session?.isBlackout ?? false
-                let status: [String: Any] = [
-                    "blackout": isBlackedOut,
-                    "active": outputOpen && !isBlackedOut,
-                    "intensity": session?.outputIntensity ?? 1,
-                    "outputOpen": outputOpen,
-                    "output": output?.activeOutputTitle ?? "",
-                    "outputs": session?.outputs.map { item in
-                        [
-                            "id": item.id.uuidString,
-                            "name": item.name,
-                            "open": output?.openOutputIDs.contains(item.id) ?? false
-                        ] as [String: Any]
-                    } ?? [],
-                    "currentScene": session?.currentSceneID?.uuidString ?? "",
-                    "scenes": session?.scenes.map { ["id": $0.id.uuidString, "name": $0.name] } ?? [],
-                    "surfaces": session?.surfaces.map { surface in
-                        let targetOutputID = surface.outputID ?? ProjectionOutput.mainID
-                        let targetOutputName = session?.outputs.first(where: { $0.id == targetOutputID })?.name ?? "Main Output"
-                        return [
-                            "id": surface.id.uuidString,
-                            "name": surface.name,
-                            "locked": surface.isLocked,
-                            "active": surface.isVisible && !surface.isBlackout,
-                            "visible": surface.isVisible,
-                            "blackout": surface.isBlackout,
-                            "intensity": surface.brightness,
-                            "source": surface.sourcePath ?? "",
-                            "usesLayerStack": surface.usesLayerStack,
-                            "outputID": targetOutputID.uuidString,
-                            "output": targetOutputName,
-                            "corners": surface.corners.map { [$0.x, $0.y] }
-                        ] as [String: Any]
-                    } ?? []
-                ]
-                return (try? JSONSerialization.data(withJSONObject: status, options: [.sortedKeys])) ?? Data("{}".utf8)
-            }
+            configureExternalStatusProvider()
             if selectedScreenID == nil {
                 selectedScreenID = screens.dropFirst().first?.id ?? screens.first?.id
             }
@@ -258,6 +240,10 @@ struct MainWorkspaceView: View {
                 offerAutosaveRecovery()
             }
         }
+    }
+
+    private var outputLifecycle: some View {
+        startupLifecycle
         .onChange(of: outputAboveMenuBar) { enabled in
             output.setOutputAboveMenuBar(enabled)
         }
@@ -306,8 +292,22 @@ struct MainWorkspaceView: View {
         .onChange(of: externalOSCPort) { _ in configureExternalControl() }
         .onChange(of: midiControlEnabled) { enabled in midiControl.configure(enabled: enabled) }
         .onChange(of: ndiInputsEnabled) { enabled in ndiService.configure(enabled: enabled) }
+    }
+
+    private var sceneLifecycle: some View {
+        outputLifecycle
         .onChange(of: selectedRecallSceneID) { sceneID in
             sceneNameDraft = session.scenes.first(where: { $0.id == sceneID })?.name
+        }
+        .onChange(of: previewSceneID) { sceneID in
+            guard sceneID != nil else {
+                takeButtonPulse = false
+                return
+            }
+            takeButtonPulse = true
+            withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) {
+                takeButtonPulse = false
+            }
         }
         .onChange(of: session.currentSceneID) { sceneID in
             activeCueStartedAt = sceneID == nil ? nil : Date()
@@ -334,12 +334,25 @@ struct MainWorkspaceView: View {
             }
         }
         .onChange(of: session.scenes) { scenes in midiControl.updateScenes(scenes) }
+    }
+
+    private var commandLifecycle: some View {
+        sceneLifecycle
         .onReceive(externalControl.commands) { command in
             executeExternalControl(command)
         }
         .onReceive(midiControl.commands) { command in
             executeExternalControl(command)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .proMapCommand)) { notification in
+            guard let rawAction = notification.userInfo?["action"] as? String,
+                  let action = ProMapCommandAction(rawValue: rawAction) else { return }
+            handleAppCommand(action)
+        }
+    }
+
+    private var mappingLifecycle: some View {
+        commandLifecycle
         .onChange(of: selectedSurfaceID) { _ in
             selectedMaskPointIndex = nil
             selectedMaskPathID = nil
@@ -364,6 +377,10 @@ struct MainWorkspaceView: View {
         }
         .onChange(of: selectedMaskPathID) { _ in selectedMaskPointIndex = nil }
         .onChange(of: selectedOutputMaskPathID) { _ in selectedOutputMaskPointIndex = nil }
+    }
+
+    private var housekeepingLifecycle: some View {
+        mappingLifecycle
         .onReceive(library.$sources) { sources in
             session.setSourceCatalog(sources)
         }
@@ -389,7 +406,7 @@ struct MainWorkspaceView: View {
                     .padding(.horizontal, 11)
                     .padding(.vertical, 7)
             }
-            workspaceTab("SCENES", symbol: "rectangle.stack.fill", area: .scenes)
+            workspaceTab("PLAYBACK", symbol: "rectangle.stack.fill", area: .scenes)
             workspaceTab("DIAGNOSTICS", symbol: "waveform.path.ecg", area: .diagnostics)
             Spacer()
             Button {
@@ -427,7 +444,7 @@ struct MainWorkspaceView: View {
     private var workspaceTagline: String {
         switch selectedWorkspaceArea {
         case .live: return "MAP · ASSIGN · COMPOSE"
-        case .scenes: return "PREVIEW · RECALL · TAKE"
+        case .scenes: return "PREVIEW · TRANSITION · TAKE"
         case .diagnostics: return "GPU · FRAME PACE · INPUT STATUS"
         }
     }
@@ -451,10 +468,18 @@ struct MainWorkspaceView: View {
         session.scenes.first(where: { $0.id == selectedRecallSceneID }) ?? session.scenes.first
     }
 
+    private var playbackTransitionStyle: SceneTransitionStyle {
+        SceneTransitionStyle(rawValue: sceneTransitionStyle) ?? .dissolve
+    }
+
+    private var playbackTransitionCurve: SceneTransitionCurve {
+        SceneTransitionCurve(rawValue: sceneTransitionCurve) ?? .easeInOut
+    }
+
     private var sceneRecallWorkspace: some View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
-                panelTitle("SCENE RECALL", detail: "\(session.scenes.count) SAVED CUES · PROGRAM IS LIVE")
+                panelTitle("PLAYBACK", detail: "\(session.scenes.count) CUES · PREVIEW, THEN TAKE TO PROGRAM")
                 Spacer()
                 Button {
                     stepSceneCue(-1)
@@ -471,7 +496,7 @@ struct MainWorkspaceView: View {
                 .disabled(session.scenes.isEmpty)
                 .help("Next scene")
                 Toggle(isOn: $timedCueAdvanceEnabled) {
-                    Label("AUTO", systemImage: "timer")
+                    Label("CUE AUTO", systemImage: "timer")
                 }
                 .toggleStyle(.button)
                 .controlSize(.small)
@@ -551,15 +576,17 @@ struct MainWorkspaceView: View {
                 divider
 
                 VStack(alignment: .leading, spacing: 13) {
-                    sceneMonitor("PROGRAM", session: session, outputTitle: output.activeOutputTitle ?? "OUTPUT CLOSED")
-                    sceneMonitor("PREVIEW", session: previewSession, outputTitle: previewSceneID == nil ? "NO SCENE STAGED" : (stagedScene?.name ?? "STAGED SCENE"))
                     if let stagedScene {
                         previewTakeBar(stagedScene)
                     } else {
-                        Text("Preview a scene here before taking it to program.")
+                        Text("Click a cue to preview it. Program stays live until you press TAKE SCENE.")
                             .font(.system(size: 9))
                             .foregroundColor(Palette.tertiaryText)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
+                    sceneMonitor("PROGRAM", session: session, outputTitle: output.activeOutputTitle ?? "OUTPUT CLOSED")
+                    sceneMonitor("PREVIEW", session: previewSession, outputTitle: previewSceneID == nil ? "NO SCENE STAGED" : (stagedScene?.name ?? "STAGED SCENE"))
+                    playbackTransitionControls
                 }
                 .padding(14)
                 .frame(width: 350)
@@ -588,7 +615,7 @@ struct MainWorkspaceView: View {
     private func sceneCueRow(_ scene: ScenePreset, number: Int) -> some View {
         Button {
             selectedRecallSceneID = scene.id
-            if previewSceneID != nil && previewSceneID != scene.id { cancelScenePreview() }
+            stageSceneForPreview(scene)
         } label: {
             HStack(spacing: 9) {
                 Text(String(format: "%02d", number))
@@ -599,7 +626,7 @@ struct MainWorkspaceView: View {
                     Text(scene.name)
                         .font(.system(size: 11, weight: .semibold))
                         .lineLimit(1)
-                    Text("\(scene.layers.count) layers · \(scene.surfaces.count) masks" + (scene.autoAdvanceAfter.map { " · AUTO \(Int($0))s" } ?? ""))
+                    Text("\(scene.layers.count) clips · \(scene.surfaces.count) masks" + (scene.autoAdvanceAfter.map { " · AUTO \(Int($0))s" } ?? ""))
                         .font(.system(size: 8, weight: .medium, design: .monospaced))
                         .foregroundColor(Palette.secondaryText)
                 }
@@ -651,24 +678,7 @@ struct MainWorkspaceView: View {
     private func sceneDetails(_ scene: ScenePreset) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                panelTitle("SCENE DETAILS", detail: scene.id == session.currentSceneID ? "CURRENT PROGRAM SCENE" : "SAVED MEDIA AND SURFACE STATE")
-                Spacer()
-                Button {
-                    selectedRecallSceneID = scene.id
-                    stageSceneForPreview(scene)
-                } label: {
-                    Label("Preview", systemImage: "eye")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                Button {
-                    takeScene(scene)
-                } label: {
-                    Label("TAKE SCENE", systemImage: "play.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(Palette.green)
-                .controlSize(.small)
+                panelTitle("CUE DETAILS", detail: scene.id == session.currentSceneID ? "CURRENT PROGRAM CUE" : "SAVED MEDIA AND SURFACE STATE")
             }
             .padding(16)
             Rectangle().fill(Palette.border).frame(height: 1)
@@ -836,8 +846,39 @@ struct MainWorkspaceView: View {
         takeScene(session.scenes[nextIndex])
     }
 
+    private func handleAppCommand(_ action: ProMapCommandAction) {
+        switch action {
+        case .captureScene: captureScene()
+        case .saveShow: saveShow()
+        case .loadShow: loadShow()
+        case .importMedia: importMedia()
+        case .liveEditor: selectedWorkspaceArea = .live
+        case .playback: selectedWorkspaceArea = .scenes
+        case .diagnostics: selectedWorkspaceArea = .diagnostics
+        case .takePreview: takePreviewScene()
+        case .previousCue: stepSceneCue(-1)
+        case .nextCue: stepSceneCue(1)
+        case .toggleBlackout: session.toggleBlackout()
+        case .toggleFreeze: output.setOutputFrozen(!output.isOutputFrozen)
+        }
+    }
+
     private func takeScene(_ scene: ScenePreset) {
-        session.recallScene(scene, sources: library.sources, transitionDuration: sceneTransitionDuration)
+        takeScene(scene, transitionStyle: nil, duration: nil)
+    }
+
+    private func takeScene(
+        _ scene: ScenePreset,
+        transitionStyle: SceneTransitionStyle?,
+        duration: TimeInterval?
+    ) {
+        session.recallScene(
+            scene,
+            sources: library.sources,
+            transitionDuration: duration ?? sceneTransitionDuration,
+            transitionStyle: transitionStyle ?? playbackTransitionStyle,
+            transitionCurve: playbackTransitionCurve
+        )
         selectedRecallSceneID = scene.id
         previewSceneID = nil
         activeCueStartedAt = Date()
@@ -897,56 +938,7 @@ struct MainWorkspaceView: View {
             }
             .padding(.trailing, 16)
 
-            Button {
-                showsOutputPicker.toggle()
-            } label: {
-                Label(output.activeOutputTitle ?? selectedScreenName, systemImage: output.isVirtualOutput ? "macwindow" : "display")
-                    .lineLimit(1)
-                    .frame(maxWidth: 180)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Palette.control)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
-            .sheet(isPresented: $showsOutputPicker) {
-                outputPickerContent
-                    .frame(width: 330, height: 560)
-                    .interactiveDismissDisabled()
-            }
-            .help("Choose, open or close an output")
-
-            Button {
-                if let choice = screens.first(where: { $0.id == selectedScreenID }) ?? screens.first {
-                    openPhysicalOutput(choice)
-                } else {
-                    openVirtualOutput(width: 1920, height: 1080)
-                }
-            } label: {
-                Label(
-                    output.isVirtualOutput ? "Open Physical Display" : (output.activeOutputTitle == nil ? "Open Output" : "Reopen Physical Output"),
-                    systemImage: "arrow.up.right.square"
-                )
-                    .font(.system(size: 12, weight: .semibold))
-                    .padding(.horizontal, 13)
-                    .padding(.vertical, 9)
-                    .background(Palette.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-            }
-            .buttonStyle(.plain)
-            .disabled(!renderer.renderingAvailable)
-
-            if output.activeOutputTitle != nil {
-                Button(action: output.close) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .frame(width: 32, height: 32)
-                        .background(Palette.control)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                .buttonStyle(.plain)
-                .help("Close output")
-            }
+            outputPickerMenu
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 13)
@@ -954,155 +946,115 @@ struct MainWorkspaceView: View {
         .overlay(alignment: .bottom) { dividerLine }
     }
 
-    private var outputPickerContent: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("OUTPUT WINDOWS")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .tracking(0.6)
-                Spacer()
-                Button("Done") { showsOutputPicker = false }
-                    .keyboardShortcut(.cancelAction)
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 8)
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Choose a display or open a virtual canvas. This panel stays open until you press Done.")
-                        .font(.system(size: 10))
-                        .foregroundColor(Palette.secondaryText)
-                    if !screens.isEmpty {
-                        outputPickerSection("PHYSICAL DISPLAYS") {
-                            ForEach(screens) { choice in
-                                outputPickerRow(choice.screen.localizedName, systemImage: "display") {
-                                    selectedScreenID = choice.id
-                                    openPhysicalOutput(choice)
-                                }
-                            }
-                        }
-                    }
-
-                    outputPickerSection("VIRTUAL OUTPUTS") {
-                        outputPickerRow("1920 × 1080", systemImage: "macwindow") {
-                            openVirtualOutput(width: 1920, height: 1080)
-                        }
-                        outputPickerRow("1280 × 720", systemImage: "macwindow") {
-                            openVirtualOutput(width: 1280, height: 720)
-                        }
-                        outputPickerRow("3840 × 2160", systemImage: "macwindow") {
-                            openVirtualOutput(width: 3840, height: 2160)
-                        }
-                    }
-
-                    outputPickerSection("CUSTOM VIRTUAL CANVAS") {
-                        HStack(spacing: 8) {
-                            TextField("Width", text: $customVirtualWidth)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(minWidth: 80)
-                                .help("Width in pixels, from 320 to 7680")
-                            Text("×")
-                                .foregroundColor(Palette.secondaryText)
-                            TextField("Height", text: $customVirtualHeight)
-                                .textFieldStyle(.roundedBorder)
-                                .frame(minWidth: 80)
-                                .help("Height in pixels, from 240 to 4320")
-                            Text("px")
-                                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                .foregroundColor(Palette.secondaryText)
-                        }
+    private var outputPickerMenu: some View {
+        Menu {
+            if !screens.isEmpty {
+                Section("Physical Displays") {
+                    ForEach(screens) { choice in
                         Button {
-                            openCustomVirtualOutput()
+                            selectedScreenID = choice.id
+                            openPhysicalOutput(choice)
                         } label: {
-                            Label("Open Custom Canvas", systemImage: "macwindow.badge.plus")
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.horizontal, 9)
-                                .padding(.vertical, 7)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!canOpenCustomVirtualOutput)
-                        .opacity(canOpenCustomVirtualOutput ? 1 : 0.45)
-                    }
-
-                    if !session.outputs.isEmpty {
-                        outputPickerSection("SAVED OUTPUTS") {
-                            ForEach(session.outputs) { savedOutput in
-                                outputPickerRow(savedOutput.name, systemImage: savedOutput.displayID == nil ? "macwindow" : "display") {
-                                    openSavedOutput(savedOutput)
-                                }
-                            }
-                        }
-                    }
-
-                    let openedOutputs = session.outputs.filter { output.openOutputIDs.contains($0.id) }
-                    if !openedOutputs.isEmpty {
-                        outputPickerSection("CLOSE OUTPUT") {
-                            ForEach(openedOutputs) { openedOutput in
-                                outputPickerRow("Close \(openedOutput.name)", systemImage: "xmark.circle") {
-                                    output.close(outputID: openedOutput.id)
-                                }
-                            }
-                        }
-                    }
-
-                    let removableOutputs = session.outputs.filter { $0.id != ProjectionOutput.mainID }
-                    if !removableOutputs.isEmpty {
-                        outputPickerSection("REMOVE SAVED OUTPUT") {
-                            ForEach(removableOutputs) { removableOutput in
-                                Button(role: .destructive) {
-                                    output.close(outputID: removableOutput.id)
-                                    session.removeOutput(removableOutput.id)
-                                    showsOutputPicker = false
-                                } label: {
-                                    Label("Remove \(removableOutput.name)", systemImage: "trash")
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(.horizontal, 9)
-                                        .padding(.vertical, 7)
-                                }
-                                .buttonStyle(.plain)
-                            }
+                            Label(choice.screen.localizedName, systemImage: "display")
                         }
                     }
                 }
-                .padding(14)
+            }
+            Section("Virtual Canvas") {
+                Button("1920 × 1080") { openVirtualOutput(width: 1920, height: 1080) }
+                Button("1280 × 720") { openVirtualOutput(width: 1280, height: 720) }
+                Button("3840 × 2160") { openVirtualOutput(width: 3840, height: 2160) }
+                Button("Custom Size…") { showsCustomVirtualCanvas = true }
+            }
+            if !session.outputs.isEmpty {
+                Section("Saved Outputs") {
+                    ForEach(session.outputs) { savedOutput in
+                        Button {
+                            openSavedOutput(savedOutput)
+                        } label: {
+                            Label(savedOutput.name, systemImage: savedOutput.displayID == nil ? "macwindow" : "display")
+                        }
+                    }
+                }
+            }
+            let openedOutputs = session.outputs.filter { output.openOutputIDs.contains($0.id) }
+            if !openedOutputs.isEmpty {
+                Section("Close Output") {
+                    ForEach(openedOutputs) { openedOutput in
+                        Button("Close · \(openedOutput.name)", systemImage: "xmark.circle") {
+                            output.close(outputID: openedOutput.id)
+                        }
+                    }
+                }
+            }
+            let removableOutputs = session.outputs.filter { $0.id != ProjectionOutput.mainID }
+            if !removableOutputs.isEmpty {
+                Section("Remove Saved Output") {
+                    ForEach(removableOutputs) { removableOutput in
+                        Button("Remove · \(removableOutput.name)", systemImage: "trash", role: .destructive) {
+                            output.close(outputID: removableOutput.id)
+                            session.removeOutput(removableOutput.id)
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: output.isVirtualOutput ? "macwindow" : "display")
+                Text(output.activeOutputTitle ?? selectedScreenName)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+            }
+            .frame(maxWidth: 220)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Palette.control)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(!renderer.renderingAvailable)
+        .help("Open a physical or virtual output, switch displays, or close an output")
+    }
+
+    private var customVirtualCanvasSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("CUSTOM VIRTUAL CANVAS")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                Spacer()
+                Button("Cancel") { showsCustomVirtualCanvas = false }
+                    .keyboardShortcut(.cancelAction)
+            }
+            Text("Set the render resolution for this window. The window stays resizable for your screen.")
+                .font(.system(size: 10))
+                .foregroundColor(Palette.secondaryText)
+            HStack(spacing: 8) {
+                TextField("Width", text: $customVirtualWidth)
+                    .textFieldStyle(.roundedBorder)
+                Text("×").foregroundColor(Palette.secondaryText)
+                TextField("Height", text: $customVirtualHeight)
+                    .textFieldStyle(.roundedBorder)
+                Text("px")
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundColor(Palette.secondaryText)
+            }
+            Text("Width 320–7680 px · Height 240–4320 px")
+                .font(.system(size: 9))
+                .foregroundColor(Palette.tertiaryText)
+            HStack {
+                Spacer()
+                Button("Open Canvas") {
+                    openCustomVirtualOutput()
+                    showsCustomVirtualCanvas = false
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!canOpenCustomVirtualOutput)
             }
         }
-        .frame(width: 330, height: 560)
+        .padding(18)
+        .frame(width: 370)
         .background(Palette.panel)
-    }
-
-    private func outputPickerSection<Content: View>(
-        _ title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.system(size: 8, weight: .bold, design: .monospaced))
-                .tracking(0.7)
-                .foregroundColor(Palette.secondaryText)
-            content()
-        }
-    }
-
-    private func outputPickerRow(
-        _ title: String,
-        systemImage: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button {
-            action()
-        } label: {
-            Label(title, systemImage: systemImage)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .background(Palette.raised)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private var mediaPanel: some View {
@@ -1230,7 +1182,7 @@ struct MainWorkspaceView: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 10)
 
-            Text("Click a clip to assign it only to this mask. Use the stack icon to add it as a full-canvas layer.")
+            Text("Click a clip to map it to this mask. Use the layer button on a clip to add it to the composition grid.")
                 .font(.system(size: 8))
                 .foregroundColor(Palette.tertiaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1270,10 +1222,11 @@ struct MainWorkspaceView: View {
                             MediaClipCell(
                                 source: source,
                                 isSelected: selectedMediaSourceID == source.id,
-                                isAssigned: selectedSurface?.sourcePath == source.reference,
-                                onAssign: { assign(source, to: selectedSurface) },
+                                isAssigned: selectedSurface?.sourcePath == source.reference
+                                    || session.layers.contains { $0.id == selectedLayerID && $0.source.reference == source.reference },
+                                onAssign: { assignClipToCurrentTarget(source) },
                                 onTogglePlayback: source.togglePlayback,
-                                onAddLayer: { session.addLayer(source: source) },
+                                onAddLayer: { selectedLayerID = session.addLayer(source: source) },
                                 onRemove: { library.remove(source) },
                                 onEditGenerator: { editGenerator(source, configuration: $0) }
                             )
@@ -1342,6 +1295,7 @@ struct MainWorkspaceView: View {
                 let fitWidth = min(geometry.size.width, geometry.size.height * 16.0 / 9.0)
                 let canvasWidth = fitWidth * mappingZoom
                 let canvasHeight = canvasWidth * 9.0 / 16.0
+                let hasAssignedSurfaceContent = canvasSession.surfaces.contains { !$0.usesLayerStack && $0.sourcePath != nil }
                 ScrollView([.horizontal, .vertical], showsIndicators: mappingZoom > 1.01) {
                     ZStack {
                         Palette.background
@@ -1411,8 +1365,8 @@ struct MainWorkspaceView: View {
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundColor(Palette.secondaryText)
                                     .allowsHitTesting(false)
-                        } else if canvasSession.layers.isEmpty && canvasSession.calibrationPattern == .off {
-                                Text("Import media, then assign it to a surface")
+                        } else if canvasSession.layers.isEmpty && !hasAssignedSurfaceContent && canvasSession.calibrationPattern == .off {
+                                Text("Choose a clip in the library, or add it to a layer track.")
                                     .font(.system(size: 12, weight: .medium))
                                     .foregroundColor(Palette.secondaryText)
                                     .allowsHitTesting(false)
@@ -1561,7 +1515,7 @@ struct MainWorkspaceView: View {
 
     private func previewTakeBar(_ scene: ScenePreset) -> some View {
         HStack(spacing: 8) {
-            Label("PREVIEW · \(scene.name)", systemImage: "eye.fill")
+            Label("PREVIEW READY · \(scene.name)", systemImage: "eye.fill")
                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                 .foregroundColor(Palette.accentSoft)
                 .lineLimit(1)
@@ -1569,20 +1523,86 @@ struct MainWorkspaceView: View {
             Button("Cancel") { cancelScenePreview() }
                 .buttonStyle(.bordered)
                 .controlSize(.mini)
+            Button("CUT") { takePreviewScene(transitionStyle: .cut) }
+                .buttonStyle(.bordered)
+                .controlSize(.mini)
+                .tint(.orange)
+                .help("Take this cue immediately without a transition")
             Button {
                 takePreviewScene()
             } label: {
-                Label("TAKE", systemImage: "play.fill")
+                Label("TAKE SCENE", systemImage: "play.fill")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.red.opacity(takeButtonPulse ? 1 : 0.72))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
             }
-            .buttonStyle(.borderedProminent)
-            .tint(Palette.green)
-            .controlSize(.mini)
+            .buttonStyle(.plain)
             .keyboardShortcut(.return, modifiers: .command)
             .help("Take this preview to the live output")
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 6)
         .background(Palette.control.opacity(0.6))
+    }
+
+    private var playbackTransitionControls: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Text("TRANSITION")
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Palette.secondaryText)
+                Picker("Transition", selection: $sceneTransitionStyle) {
+                    ForEach(SceneTransitionStyle.allCases) { style in
+                        Text(style.rawValue).tag(style.rawValue)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
+            }
+            HStack(spacing: 7) {
+                Text("DURATION")
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Palette.secondaryText)
+                Slider(value: $sceneTransitionDuration, in: 0.05...5, step: 0.05)
+                    .controlSize(.mini)
+                    .disabled(playbackTransitionStyle == .cut)
+                    .help("Set the active transition duration")
+                Text(String(format: "%.2f s", sceneTransitionDuration))
+                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                    .monospacedDigit()
+                    .foregroundColor(Palette.primaryText)
+                    .frame(width: 46, alignment: .trailing)
+            }
+            HStack(spacing: 5) {
+                Text("CURVE")
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Palette.secondaryText)
+                Picker("Transition curve", selection: $sceneTransitionCurve) {
+                    ForEach(SceneTransitionCurve.allCases) { curve in
+                        Text(curve.rawValue).tag(curve.rawValue)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .disabled(playbackTransitionStyle == .cut)
+                Spacer()
+                ForEach([0.25, 0.5, 1.0, 2.0], id: \.self) { duration in
+                    Button(String(format: "%.2g", duration)) { sceneTransitionDuration = duration }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .help("Set duration to \(duration) seconds")
+                        .disabled(playbackTransitionStyle == .cut)
+                }
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 8)
+        .background(Palette.raised)
+        .clipShape(RoundedRectangle(cornerRadius: 7))
     }
 
     private var programMonitor: some View {
@@ -1619,8 +1639,23 @@ struct MainWorkspaceView: View {
     private var layersPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                panelTitle("MASKS & LAYERS", detail: "INDEPENDENT MASK SOURCES · ONE DISPLAY OUTPUT")
+                panelTitle("COMPOSITION GRID", detail: "SOURCE CLIPS × LAYER TRACKS")
                 Spacer()
+                Menu {
+                    Section("Add Layer from Clip") {
+                        ForEach(library.sources) { source in
+                            Button(source.title) {
+                                selectedLayerID = session.addLayer(source: source)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Layer +", systemImage: "plus")
+                        .font(.system(size: 9, weight: .semibold))
+                }
+                .menuStyle(.borderlessButton)
+                .disabled(library.sources.isEmpty || session.isMappingLocked)
+                .help("Add a layer track with a clip slot row")
                 Button(action: session.toggleBlackout) {
                     Image(systemName: session.isBlackout ? "lightbulb.slash.fill" : "lightbulb")
                         .font(.system(size: 12, weight: .semibold))
@@ -1643,11 +1678,11 @@ struct MainWorkspaceView: View {
 
                     VStack(alignment: .leading, spacing: 9) {
                         HStack {
-                            Text("LAYER STACK")
+                            Text("LAYER TRACKS")
                                 .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                 .foregroundColor(Palette.secondaryText)
                             Spacer()
-                            Text("TOP IS FRONT")
+                            Text("TOP IS FRONT · CLICK A SLOT TO LOAD IT")
                                 .font(.system(size: 8, weight: .medium, design: .monospaced))
                                 .foregroundColor(Palette.tertiaryText)
                         }
@@ -1661,7 +1696,10 @@ struct MainWorkspaceView: View {
                                 LayerRow(
                                     layer: layer,
                                     source: layer.source,
+                                    availableSources: library.sources,
                                     number: session.layers.count - index,
+                                    isSelected: selectedLayerID == layer.id,
+                                    onSelect: { selectedLayerID = layer.id },
                                     onToggle: { session.setEnabled(!$0, for: layer.id) },
                                     onSolo: { session.setSolo(!$0, for: layer.id) },
                                     onMove: { session.moveLayer(layer.id, by: $0) },
@@ -1677,6 +1715,7 @@ struct MainWorkspaceView: View {
                                     onContentTransform: { session.setContentTransform($0, for: layer.id) },
                                     onOpacity: { session.setOpacity($0, for: layer.id) },
                                     onRemove: { session.removeLayer(layer) },
+                                    onSelectSource: { session.setLayerSource($0, for: layer.id) },
                                     onEffectStack: { session.setEffectStack($0, for: layer.id) },
                                     userEffectPresets: userEffectPresets,
                                     onSaveEffectPreset: beginSavingEffectPreset,
@@ -1769,6 +1808,18 @@ struct MainWorkspaceView: View {
         }
     }
 
+    private func assignClipToCurrentTarget(_ source: MediaSource) {
+        selectedMediaSourceID = source.id
+        if let selectedLayerID,
+           let layer = session.layers.first(where: { $0.id == selectedLayerID }),
+           !layer.isLocked {
+            session.setLayerSource(source, for: selectedLayerID)
+            if source.kind == .video && !source.isPlaying { source.togglePlayback() }
+            return
+        }
+        assign(source, to: selectedSurface)
+    }
+
     private func editGenerator(_ source: MediaSource, configuration: VisualGenerator) {
         guard let references = source.updateGeneratorConfiguration(configuration) else { return }
         session.updateSourceReference(from: references.oldReference, to: references.newReference)
@@ -1786,12 +1837,12 @@ struct MainWorkspaceView: View {
         previewSession.copyContent(from: session)
     }
 
-    private func takePreviewScene() {
+    private func takePreviewScene(transitionStyle: SceneTransitionStyle? = nil) {
         guard let stagedScene else {
             cancelScenePreview()
             return
         }
-        takeScene(stagedScene)
+        takeScene(stagedScene, transitionStyle: transitionStyle, duration: nil)
     }
 
     private func configureExternalControl() {
@@ -1805,6 +1856,48 @@ struct MainWorkspaceView: View {
             token: externalAPIToken
         )
         externalControl.configureOSC(enabled: externalOSCEnabled, port: externalOSCPort)
+    }
+
+    private func configureExternalStatusProvider() {
+        externalControl.statusProvider = { [weak session, weak output] in
+            let outputOpen = output?.activeOutputTitle != nil
+            let isBlackedOut = session?.isBlackout ?? false
+            let status: [String: Any] = [
+                "blackout": isBlackedOut,
+                "active": outputOpen && !isBlackedOut,
+                "intensity": session?.outputIntensity ?? 1,
+                "outputOpen": outputOpen,
+                "output": output?.activeOutputTitle ?? "",
+                "outputs": session?.outputs.map { item in
+                    [
+                        "id": item.id.uuidString,
+                        "name": item.name,
+                        "open": output?.openOutputIDs.contains(item.id) ?? false
+                    ] as [String: Any]
+                } ?? [],
+                "currentScene": session?.currentSceneID?.uuidString ?? "",
+                "scenes": session?.scenes.map { ["id": $0.id.uuidString, "name": $0.name] } ?? [],
+                "surfaces": session?.surfaces.map { surface in
+                    let targetOutputID = surface.outputID ?? ProjectionOutput.mainID
+                    let targetOutputName = session?.outputs.first(where: { $0.id == targetOutputID })?.name ?? "Main Output"
+                    return [
+                        "id": surface.id.uuidString,
+                        "name": surface.name,
+                        "locked": surface.isLocked,
+                        "active": surface.isVisible && !surface.isBlackout,
+                        "visible": surface.isVisible,
+                        "blackout": surface.isBlackout,
+                        "intensity": surface.brightness,
+                        "source": surface.sourcePath ?? "",
+                        "usesLayerStack": surface.usesLayerStack,
+                        "outputID": targetOutputID.uuidString,
+                        "output": targetOutputName,
+                        "corners": surface.corners.map { [$0.x, $0.y] }
+                    ] as [String: Any]
+                } ?? []
+            ]
+            return (try? JSONSerialization.data(withJSONObject: status, options: [.sortedKeys])) ?? Data("{}".utf8)
+        }
     }
 
     private func configureNDIOutput() {
@@ -1855,7 +1948,8 @@ struct MainWorkspaceView: View {
             guard let scene = session.scenes.first(where: { $0.id == sceneID }) else { return }
             takeScene(scene)
         case .takeSceneNamed(let name):
-            guard let scene = session.scenes.first(where: { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }) else { return }
+            guard let sceneID = uniqueSceneID(named: name),
+                  let scene = session.scenes.first(where: { $0.id == sceneID }) else { return }
             takeScene(scene)
         case .setCorner(let surfaceID, let cornerIndex, let point):
             session.updateCorner(cornerIndex, to: point, on: surfaceID)
@@ -1865,6 +1959,15 @@ struct MainWorkspaceView: View {
     private func uniqueSurfaceID(named name: String) -> UUID? {
         let matches = session.surfaces.filter {
             $0.name.localizedCaseInsensitiveCompare(name.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
+        }
+        return matches.count == 1 ? matches.first?.id : nil
+    }
+
+    private func uniqueSceneID(named name: String) -> UUID? {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedName.isEmpty else { return nil }
+        let matches = session.scenes.filter {
+            $0.name.localizedCaseInsensitiveCompare(normalizedName) == .orderedSame
         }
         return matches.count == 1 ? matches.first?.id : nil
     }
@@ -1885,18 +1988,10 @@ struct MainWorkspaceView: View {
                     .foregroundColor(Palette.secondaryText)
                 Spacer()
                 Menu {
-                Section("Church Projection Setup") {
-                    Button("Cross + Ceiling Surfaces") { addChurchSurfaces() }
-                        .disabled(session.isMappingLocked)
-                        .help("Add both masks to the output selected in the mapping preview")
-                }
-                Divider()
                     Button("Quadrilateral") { addSurface(ProjectionSurface(name: "Quadrilateral")) }
                     Button("Triangle") { addSurface(.triangle()) }
                     Button("Circle") { addSurface(.circle()) }
                     Button("Ellipse") { addSurface(.ellipse()) }
-                    Button("Cross Mask") { addSurface(.cross()) }
-                    Button("Ceiling Trapezoid") { addSurface(.ceiling()) }
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 10, weight: .bold))
@@ -2006,7 +2101,6 @@ struct MainWorkspaceView: View {
                             let previousKind = $0.maskKind
                             $0.maskKind = kind
                             if kind == .rectangle { $0.maskPoints = ProjectionSurface.rectanglePoints }
-                            if kind == .cross { $0.maskPoints = ProjectionSurface.crossPoints }
                             if kind == .polygon && previousKind != .polygon {
                                 $0.maskPoints = [
                                     NormalizedPoint(0.06, 0.06), NormalizedPoint(0.94, 0.06),
@@ -2016,7 +2110,12 @@ struct MainWorkspaceView: View {
                         }
                     }
                 )) {
-                    ForEach(SurfaceMaskKind.allCases) { kind in Text(kind.rawValue).tag(kind) }
+                    if surface.maskKind == .cross {
+                        Text("Existing custom mask").tag(SurfaceMaskKind.cross)
+                    }
+                    ForEach(SurfaceMaskKind.allCases.filter { $0 != .cross }) { kind in
+                        Text(kind.rawValue).tag(kind)
+                    }
                 }
                 .font(.system(size: 10))
                 .pickerStyle(.menu)
@@ -3200,20 +3299,6 @@ struct MainWorkspaceView: View {
         selectedSurfaceID = surface.id
     }
 
-    private func addChurchSurfaces() {
-        guard !session.isMappingLocked else { return }
-        let destinationOutputID = mappingPreviewOutputID == ProjectionOutput.mainID ? nil : mappingPreviewOutputID
-        var cross = ProjectionSurface.cross()
-        cross.name = "Church Cross"
-        cross.outputID = destinationOutputID
-        var ceiling = ProjectionSurface.ceiling()
-        ceiling.name = "Ceiling"
-        ceiling.outputID = destinationOutputID
-        session.addSurface(cross)
-        session.addSurface(ceiling)
-        selectedSurfaceID = cross.id
-    }
-
     private var footer: some View {
         HStack(spacing: 18) {
             Label("GPU", systemImage: "cpu")
@@ -3652,7 +3737,11 @@ struct MainWorkspaceView: View {
                         sourcePath: $0.reference,
                         audioMuted: $0.isAudioMuted,
                         audioVolume: $0.audioVolume,
-                        audioDelayMilliseconds: $0.kind == .ndi ? $0.audioDelayMilliseconds : 0
+                        audioDelayMilliseconds: $0.kind == .ndi || $0.kind == .video ? $0.audioDelayMilliseconds : 0,
+                        isLooping: $0.kind == .video ? $0.isLooping : nil,
+                        isPlaying: $0.kind == .video ? $0.isPlaying : nil,
+                        playbackTime: $0.kind == .video ? $0.playbackTimeSeconds : nil,
+                        playbackRate: $0.kind == .video ? $0.playbackRate : nil
                     )
                 }
         )
@@ -3981,9 +4070,15 @@ private struct DiagnosticsWorkspace: View {
                     DiagnosticMetricCard(
                         title: "GPU COMMAND TIME",
                         value: gpuTimeDescription,
-                        detail: "Metal command buffer timing; unavailable samples are left blank.",
+                        detail: gpuTimingDetail,
                         symbol: "timer",
-                        warning: gpuTimeMilliseconds == nil
+                        warning: activeOutputID != nil && gpuTimeMilliseconds == nil
+                    )
+                    DiagnosticMetricCard(
+                        title: "CPU FRAME BUILD",
+                        value: cpuFrameBuildDescription,
+                        detail: "CPU time to prepare and encode one Metal frame; not GPU execution time.",
+                        symbol: "cpu"
                     )
                     DiagnosticMetricCard(
                         title: "LATE PRESENTATIONS",
@@ -4064,8 +4159,31 @@ private struct DiagnosticsWorkspace: View {
     }
 
     private var gpuTimeDescription: String {
-        guard let gpuTimeMilliseconds else { return "Not available" }
+        guard let gpuTimeMilliseconds else {
+            if let activeOutputID,
+               renderer.gpuTimingStatusByOutputID[activeOutputID]?.contains("without GPU timestamps") == true {
+                return "No timestamps"
+            }
+            return activeOutputID == nil ? "No output" : "Sampling…"
+        }
         return String(format: "%.2f ms", gpuTimeMilliseconds)
+    }
+
+    private var gpuTimingDetail: String {
+        guard let activeOutputID else { return "Open a physical or virtual output to sample its Metal command buffer." }
+        return renderer.gpuTimingStatusByOutputID[activeOutputID]
+            ?? "Waiting for a completed output frame."
+    }
+
+    private var cpuFrameBuildDescription: String {
+        let milliseconds: Double?
+        if let activeOutputID {
+            milliseconds = renderer.cpuFrameBuildMillisecondsByOutputID[activeOutputID]
+        } else {
+            milliseconds = renderer.cpuFrameBuildMillisecondsByOutputID.values.max()
+        }
+        guard let milliseconds else { return "Waiting…" }
+        return String(format: "%.2f ms", milliseconds)
     }
 
     private var latePresentationPercent: Double? {
@@ -4804,6 +4922,8 @@ private struct MediaClipCell: View {
     let onRemove: () -> Void
     let onEditGenerator: (VisualGenerator) -> Void
     @State private var showsAudioControls = false
+    @State private var isScrubbingPlayback = false
+    @State private var playbackScrubPosition = 0.0
     @State private var showsGeneratorControls = false
 
     var body: some View {
@@ -4909,6 +5029,18 @@ private struct MediaClipCell: View {
                     }
                     .buttonStyle(.plain)
                     .help(source.isPlaying ? "Pause video" : "Play video")
+
+                    Button { source.setLooping(!source.isLooping) } label: {
+                        Image(systemName: "repeat")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundColor(source.isLooping ? Palette.accentSoft : Palette.secondaryText)
+                            .frame(width: 25, height: 23)
+                            .background(Palette.background)
+                            .clipShape(RoundedRectangle(cornerRadius: 5))
+                    }
+                    .buttonStyle(.plain)
+                    .help(source.isLooping ? "Disable clip looping" : "Loop clip")
+
                 }
                 if source.kind == .video || source.kind == .ndi {
                     Button {
@@ -4923,7 +5055,11 @@ private struct MediaClipCell: View {
                     .buttonStyle(.plain)
                     .popover(isPresented: $showsAudioControls, arrowEdge: .bottom) {
                         VStack(alignment: .leading, spacing: 10) {
-                            if source.kind == .ndi {
+                            if source.kind == .video {
+                                playbackControls
+                                Divider()
+                            }
+                            if source.kind == .ndi || source.kind == .video {
                                 InputAudioMeter(source: source)
                             }
                             Toggle("Mute audio", isOn: Binding(
@@ -4941,7 +5077,7 @@ private struct MediaClipCell: View {
                                     .frame(width: 32, alignment: .trailing)
                             }
                             .font(.system(size: 9))
-                            if source.kind == .ndi {
+                            if source.kind == .ndi || source.kind == .video {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack {
                                         Text("A/V SYNC DELAY")
@@ -4957,16 +5093,21 @@ private struct MediaClipCell: View {
                                         set: source.setAudioDelayMilliseconds
                                     ), in: 0...500, step: 10)
                                     .controlSize(.mini)
+                                    .disabled(source.kind == .video && !source.isAudioDelaySupported)
                                 }
-                                Text("Delays this input's audio while its picture remains live.")
+                                Text(source.audioDelayStatusMessage ?? (source.kind == .video
+                                    ? "Delays this clip's audio to sync it with its picture."
+                                    : "Delays this input's audio while its picture remains live."))
                                     .font(.system(size: 8))
                                     .foregroundColor(Palette.tertiaryText)
                             }
                         }
                         .padding(12)
-                        .frame(width: 190)
+                        .frame(width: source.kind == .video ? 274 : 190)
                     }
-                    .help(source.isAudioMuted ? "Audio is muted; edit source audio" : "Edit source audio")
+                    .help(source.kind == .video
+                        ? "Open clip playback and audio controls"
+                        : (source.isAudioMuted ? "Audio is muted; edit source audio" : "Edit source audio"))
                 }
                 if source.kind == .capture {
                     Menu {
@@ -5066,6 +5207,84 @@ private struct MediaClipCell: View {
         .frame(width: 230)
     }
 
+    private var playbackControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("CLIP PLAYBACK")
+                    .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Palette.secondaryText)
+                Spacer()
+                Menu {
+                    ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { rate in
+                        Button {
+                            source.setPlaybackRate(rate)
+                        } label: {
+                            if abs(source.playbackRate - rate) < 0.001 {
+                                Label(String(format: "%.2g×", rate), systemImage: "checkmark")
+                            } else {
+                                Text(String(format: "%.2g×", rate))
+                            }
+                        }
+                    }
+                } label: {
+                    Label(String(format: "%.2g×", source.playbackRate), systemImage: "speedometer")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                }
+                .menuStyle(.borderlessButton)
+                .help("Set clip playback speed")
+            }
+
+            HStack {
+                Text(playbackTimeLabel(isScrubbingPlayback ? playbackScrubPosition : source.playbackTimeSeconds))
+                Spacer()
+                Text(playbackTimeLabel(source.playbackDurationSeconds))
+                    .foregroundColor(Palette.secondaryText)
+            }
+            .font(.system(size: 8, weight: .medium, design: .monospaced))
+
+            Slider(
+                value: Binding(
+                    get: { isScrubbingPlayback ? playbackScrubPosition : source.playbackTimeSeconds },
+                    set: { playbackScrubPosition = $0 }
+                ),
+                in: 0...max(source.playbackDurationSeconds, 0.01),
+                onEditingChanged: { isEditing in
+                    if isEditing {
+                        playbackScrubPosition = source.playbackTimeSeconds
+                        isScrubbingPlayback = true
+                    } else {
+                        source.seekPlayback(to: playbackScrubPosition)
+                        isScrubbingPlayback = false
+                    }
+                }
+            )
+            .controlSize(.small)
+            .disabled(source.playbackDurationSeconds <= 0)
+
+            HStack(spacing: 8) {
+                Button { source.seekPlayback(by: -5) } label: { Text("−5s") }
+                    .help("Rewind five seconds")
+                Button { source.seekPlayback(by: -1.0 / 30.0) } label: { Image(systemName: "backward.end.fill") }
+                    .help("Step back one frame")
+                Button { source.seekPlayback(by: 1.0 / 30.0) } label: { Image(systemName: "forward.end.fill") }
+                    .help("Step forward one frame")
+                Button { source.seekPlayback(by: 5) } label: { Text("+5s") }
+                    .help("Advance five seconds")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.mini)
+            .frame(maxWidth: .infinity)
+        }
+        .padding(12)
+        .frame(width: 250)
+    }
+
+    private func playbackTimeLabel(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "00:00" }
+        let wholeSeconds = Int(seconds.rounded(.down))
+        return String(format: "%02d:%02d", wholeSeconds / 60, wholeSeconds % 60)
+    }
+
     private func generatorSlider(
         _ title: String,
         keyPath: WritableKeyPath<VisualGenerator, Double>,
@@ -5149,7 +5368,7 @@ private struct InputAudioMeter: View {
             .frame(height: 7)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("NDI input audio level")
+        .accessibilityLabel(source.kind == .video ? "Video clip audio level" : "NDI input audio level")
         .accessibilityValue("\(Int(boundedLevel * 100)) percent")
         .onReceive(meterTimer) { _ in source.refreshAudioMeter() }
     }
@@ -5174,7 +5393,10 @@ private struct SourcePreviewRefresh: View {
 private struct LayerRow: View {
     let layer: RenderLayer
     @ObservedObject var source: MediaSource
+    let availableSources: [MediaSource]
     let number: Int
+    let isSelected: Bool
+    let onSelect: () -> Void
     let onToggle: (Bool) -> Void
     let onSolo: (Bool) -> Void
     let onMove: (Int) -> Void
@@ -5186,6 +5408,7 @@ private struct LayerRow: View {
     let onContentTransform: (SurfaceContentTransform) -> Void
     let onOpacity: (Double) -> Void
     let onRemove: () -> Void
+    let onSelectSource: (MediaSource) -> Void
     let onEffectStack: ([SurfaceEffect]) -> Void
     let userEffectPresets: [UserEffectPreset]
     let onSaveEffectPreset: ([SurfaceEffect]) -> Void
@@ -5202,10 +5425,6 @@ private struct LayerRow: View {
                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
                     .foregroundColor(Palette.tertiaryText)
                     .frame(width: 20)
-
-                Image(systemName: mediaSymbol(layer.source))
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Palette.accentSoft)
 
                 if isEditingName {
                     HStack(spacing: 4) {
@@ -5226,9 +5445,36 @@ private struct LayerRow: View {
                     }
                     .frame(minWidth: 80, maxWidth: 145)
                 } else {
-                    Text(layer.displayName)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(1)
+                    Menu {
+                        Section("Clip Slot · Layer \(number)") {
+                            ForEach(availableSources) { candidate in
+                                Button {
+                                    onSelect()
+                                    onSelectSource(candidate)
+                                } label: {
+                                    Label(candidate.title, systemImage: mediaSymbol(candidate))
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: mediaSymbol(layer.source))
+                                .foregroundColor(Palette.accentSoft)
+                            Text(layer.displayName)
+                                .font(.system(size: 10, weight: .semibold))
+                                .lineLimit(1)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 7, weight: .bold))
+                                .foregroundColor(Palette.tertiaryText)
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 5)
+                        .background(Palette.control.opacity(0.75))
+                        .clipShape(RoundedRectangle(cornerRadius: 5))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .onTapGesture(perform: onSelect)
+                    .help("Choose the clip loaded into this layer slot")
                 }
 
                 if layer.isLocked {
@@ -5336,6 +5582,44 @@ private struct LayerRow: View {
                 .help("Remove layer")
             }
 
+            HStack(spacing: 5) {
+                Text("CLIP SLOTS")
+                    .font(.system(size: 7, weight: .semibold, design: .monospaced))
+                    .foregroundColor(Palette.tertiaryText)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        ForEach(Array(availableSources.enumerated()), id: \.element.id) { index, candidate in
+                            let isActiveClip = candidate.reference == source.reference
+                            Button {
+                                onSelect()
+                                onSelectSource(candidate)
+                            } label: {
+                                VStack(spacing: 3) {
+                                    Text(String(format: "%02d", index + 1))
+                                        .font(.system(size: 7, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(isActiveClip ? Palette.background : Palette.tertiaryText)
+                                    HStack(spacing: 3) {
+                                        Image(systemName: mediaSymbol(candidate))
+                                            .font(.system(size: 7, weight: .semibold))
+                                        Text(candidate.title)
+                                            .font(.system(size: 7, weight: .medium))
+                                            .lineLimit(1)
+                                    }
+                                    .foregroundColor(isActiveClip ? Palette.background : Palette.secondaryText)
+                                }
+                                .frame(width: 78, height: 33)
+                                .background(isActiveClip ? Palette.accentSoft : Palette.control)
+                                .clipShape(RoundedRectangle(cornerRadius: 5))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(layer.isLocked)
+                            .help("Load \(candidate.title) into this track")
+                        }
+                    }
+                }
+                .frame(height: 35)
+            }
+
             HStack(spacing: 8) {
                 Text("OPACITY")
                     .font(.system(size: 8, weight: .semibold, design: .monospaced))
@@ -5430,6 +5714,12 @@ private struct LayerRow: View {
         .padding(11)
         .background(layer.isEnabled ? Palette.raised : Palette.raised.opacity(0.6))
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isSelected ? Palette.accentSoft : Color.clear, lineWidth: 1.25)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onTapGesture(perform: onSelect)
         .opacity(layer.isEnabled ? 1 : 0.65)
     }
 
@@ -5514,6 +5804,8 @@ private struct LayerRow: View {
             layerTransformSlider("ZOOM Y", value: transform.zoomY, range: 0.1...4, keyPath: \.zoomY, format: "%.2f×")
             layerTransformSlider("POSITION X", value: transform.offsetX, range: -1...1, keyPath: \.offsetX, format: "%+.2f")
             layerTransformSlider("POSITION Y", value: transform.offsetY, range: -1...1, keyPath: \.offsetY, format: "%+.2f")
+            layerTransformSlider("SKEW X", value: transform.skewX, range: -1...1, keyPath: \.skewX, format: "%+.2f")
+            layerTransformSlider("SKEW Y", value: transform.skewY, range: -1...1, keyPath: \.skewY, format: "%+.2f")
             layerTransformSlider("ROTATION", value: transform.rotationDegrees, range: -180...180, keyPath: \.rotationDegrees, format: "%.0f°")
             HStack(spacing: 14) {
                 Toggle("Flip horizontal", isOn: Binding(

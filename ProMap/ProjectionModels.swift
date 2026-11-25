@@ -153,6 +153,21 @@ enum CalibrationPattern: String, CaseIterable, Identifiable {
     }
 }
 
+enum SceneTransitionStyle: String, CaseIterable, Identifiable {
+    case cut = "Cut"
+    case dissolve = "Dissolve"
+    case dipToBlack = "Dip to Black"
+
+    var id: String { rawValue }
+}
+
+enum SceneTransitionCurve: String, CaseIterable, Identifiable {
+    case linear = "Linear"
+    case easeInOut = "Ease In / Out"
+
+    var id: String { rawValue }
+}
+
 struct SurfaceColorCorrection: Codable, Equatable {
     var contrast: Double
     var saturation: Double
@@ -499,6 +514,8 @@ struct SurfaceContentTransform: Codable, Equatable {
     var offsetX: Double
     var offsetY: Double
     var rotationDegrees: Double
+    var skewX: Double
+    var skewY: Double
     var isFlippedHorizontally: Bool
     var isFlippedVertically: Bool
 
@@ -508,6 +525,8 @@ struct SurfaceContentTransform: Codable, Equatable {
         offsetX: Double = 0,
         offsetY: Double = 0,
         rotationDegrees: Double = 0,
+        skewX: Double = 0,
+        skewY: Double = 0,
         isFlippedHorizontally: Bool = false,
         isFlippedVertically: Bool = false
     ) {
@@ -516,6 +535,8 @@ struct SurfaceContentTransform: Codable, Equatable {
         self.offsetX = offsetX
         self.offsetY = offsetY
         self.rotationDegrees = rotationDegrees
+        self.skewX = skewX
+        self.skewY = skewY
         self.isFlippedHorizontally = isFlippedHorizontally
         self.isFlippedVertically = isFlippedVertically
     }
@@ -533,8 +554,30 @@ struct SurfaceContentTransform: Codable, Equatable {
             offsetX: bounded(offsetX, to: -1...1, fallback: 0),
             offsetY: bounded(offsetY, to: -1...1, fallback: 0),
             rotationDegrees: bounded(rotationDegrees, to: -180...180, fallback: 0),
+            skewX: bounded(skewX, to: -1...1, fallback: 0),
+            skewY: bounded(skewY, to: -1...1, fallback: 0),
             isFlippedHorizontally: isFlippedHorizontally,
             isFlippedVertically: isFlippedVertically
+        )
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case zoomX, zoomY, offsetX, offsetY, rotationDegrees, skewX, skewY
+        case isFlippedHorizontally, isFlippedVertically
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            zoomX: try values.decodeIfPresent(Double.self, forKey: .zoomX) ?? 1,
+            zoomY: try values.decodeIfPresent(Double.self, forKey: .zoomY) ?? 1,
+            offsetX: try values.decodeIfPresent(Double.self, forKey: .offsetX) ?? 0,
+            offsetY: try values.decodeIfPresent(Double.self, forKey: .offsetY) ?? 0,
+            rotationDegrees: try values.decodeIfPresent(Double.self, forKey: .rotationDegrees) ?? 0,
+            skewX: try values.decodeIfPresent(Double.self, forKey: .skewX) ?? 0,
+            skewY: try values.decodeIfPresent(Double.self, forKey: .skewY) ?? 0,
+            isFlippedHorizontally: try values.decodeIfPresent(Bool.self, forKey: .isFlippedHorizontally) ?? false,
+            isFlippedVertically: try values.decodeIfPresent(Bool.self, forKey: .isFlippedVertically) ?? false
         )
     }
 }
@@ -592,15 +635,6 @@ struct ProjectionSurface: Codable, Identifiable, Equatable {
         NormalizedPoint(1, 1), NormalizedPoint(0, 1)
     ]
 
-    static let crossPoints = [
-        NormalizedPoint(0.38, 0.04), NormalizedPoint(0.62, 0.04),
-        NormalizedPoint(0.62, 0.38), NormalizedPoint(0.96, 0.38),
-        NormalizedPoint(0.96, 0.62), NormalizedPoint(0.62, 0.62),
-        NormalizedPoint(0.62, 0.96), NormalizedPoint(0.38, 0.96),
-        NormalizedPoint(0.38, 0.62), NormalizedPoint(0.04, 0.62),
-        NormalizedPoint(0.04, 0.38), NormalizedPoint(0.38, 0.38)
-    ]
-
     init(
         id: UUID = UUID(),
         name: String,
@@ -635,20 +669,6 @@ struct ProjectionSurface: Codable, Identifiable, Equatable {
 
     static var main: ProjectionSurface {
         ProjectionSurface(name: "Main Surface", usesLayerStack: true)
-    }
-
-    static func cross() -> ProjectionSurface {
-        ProjectionSurface(name: "Cross", maskKind: .cross, maskPoints: crossPoints)
-    }
-
-    static func ceiling() -> ProjectionSurface {
-        ProjectionSurface(
-            name: "Ceiling",
-            corners: [
-                NormalizedPoint(0.16, 0.10), NormalizedPoint(0.84, 0.10),
-                NormalizedPoint(0.96, 0.90), NormalizedPoint(0.04, 0.90)
-            ]
-        )
     }
 
     static func triangle() -> ProjectionSurface {
@@ -758,10 +778,12 @@ struct SavedLayerState: Codable, Identifiable, Equatable {
     var contentTransform: SurfaceContentTransform?
     var isPlaying: Bool
     var playbackTime: Double
+    var playbackRate: Double?
     var effectStack: [SurfaceEffect]?
     var isAudioMuted: Bool?
     var audioVolume: Double?
     var audioDelayMilliseconds: Double?
+    var isLooping: Bool?
 
     init(
         id: UUID = UUID(),
@@ -774,10 +796,12 @@ struct SavedLayerState: Codable, Identifiable, Equatable {
         contentTransform: SurfaceContentTransform? = nil,
         isPlaying: Bool = false,
         playbackTime: Double = 0,
+        playbackRate: Double? = nil,
         effectStack: [SurfaceEffect]? = nil,
         isAudioMuted: Bool? = nil,
         audioVolume: Double? = nil,
-        audioDelayMilliseconds: Double? = nil
+        audioDelayMilliseconds: Double? = nil,
+        isLooping: Bool? = nil
     ) {
         self.id = id
         self.sourcePath = sourcePath
@@ -789,10 +813,12 @@ struct SavedLayerState: Codable, Identifiable, Equatable {
         self.contentTransform = contentTransform?.sanitized()
         self.isPlaying = isPlaying
         self.playbackTime = max(playbackTime, 0)
+        self.playbackRate = playbackRate.map { min(max($0.isFinite ? $0 : 1, 0.25), 2) }
         self.effectStack = effectStack?.prefix(SurfaceEffect.maximumStackSize).map { $0.sanitized() }
         self.isAudioMuted = isAudioMuted
         self.audioVolume = audioVolume.map { min(max($0, 0), 1) }
         self.audioDelayMilliseconds = audioDelayMilliseconds.map { min(max($0.isFinite ? $0 : 0, 0), 500) }
+        self.isLooping = isLooping
     }
 }
 
@@ -810,12 +836,20 @@ struct SceneSurfaceState: Codable, Equatable {
     var audioMuted: Bool?
     var audioVolume: Double?
     var audioDelayMilliseconds: Double?
+    var isLooping: Bool?
+    var isPlaying: Bool?
+    var playbackTime: Double?
+    var playbackRate: Double?
 
     init(
         surface: ProjectionSurface,
         audioMuted: Bool? = nil,
         audioVolume: Double? = nil,
-        audioDelayMilliseconds: Double? = nil
+        audioDelayMilliseconds: Double? = nil,
+        isLooping: Bool? = nil,
+        isPlaying: Bool? = nil,
+        playbackTime: Double? = nil,
+        playbackRate: Double? = nil
     ) {
         surfaceID = surface.id
         sourcePath = surface.sourcePath
@@ -830,6 +864,10 @@ struct SceneSurfaceState: Codable, Equatable {
         self.audioMuted = audioMuted
         self.audioVolume = audioVolume.map { min(max($0, 0), 1) }
         self.audioDelayMilliseconds = audioDelayMilliseconds.map { min(max($0.isFinite ? $0 : 0, 0), 500) }
+        self.isLooping = isLooping
+        self.isPlaying = isPlaying
+        self.playbackTime = playbackTime.map { max($0.isFinite ? $0 : 0, 0) }
+        self.playbackRate = playbackRate.map { min(max($0.isFinite ? $0 : 1, 0.25), 2) }
     }
 }
 
@@ -838,14 +876,31 @@ struct SavedSourceAudioState: Codable, Equatable, Identifiable {
     var audioMuted: Bool
     var audioVolume: Double
     var audioDelayMilliseconds: Double
+    var isLooping: Bool?
+    var isPlaying: Bool?
+    var playbackTime: Double?
+    var playbackRate: Double?
 
     var id: String { sourcePath }
 
-    init(sourcePath: String, audioMuted: Bool, audioVolume: Double, audioDelayMilliseconds: Double = 0) {
+    init(
+        sourcePath: String,
+        audioMuted: Bool,
+        audioVolume: Double,
+        audioDelayMilliseconds: Double = 0,
+        isLooping: Bool? = nil,
+        isPlaying: Bool? = nil,
+        playbackTime: Double? = nil,
+        playbackRate: Double? = nil
+    ) {
         self.sourcePath = sourcePath
         self.audioMuted = audioMuted
         self.audioVolume = min(max(audioVolume.isFinite ? audioVolume : 1, 0), 1)
         self.audioDelayMilliseconds = min(max(audioDelayMilliseconds.isFinite ? audioDelayMilliseconds : 0, 0), 500)
+        self.isLooping = isLooping
+        self.isPlaying = isPlaying
+        self.playbackTime = playbackTime.map { max($0.isFinite ? $0 : 0, 0) }
+        self.playbackRate = playbackRate.map { min(max($0.isFinite ? $0 : 1, 0.25), 2) }
     }
 }
 

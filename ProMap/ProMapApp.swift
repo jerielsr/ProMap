@@ -10,11 +10,63 @@ struct ProMapApp: App {
             MainWorkspaceView()
         }
         .windowStyle(.hiddenTitleBar)
+        .commands {
+            ProMapCommands()
+        }
 
         Settings {
             OutputSettingsView()
         }
     }
+}
+
+private struct ProMapCommands: Commands {
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("Capture Current Scene") { post(.captureScene) }
+        }
+        CommandGroup(replacing: .saveItem) {
+            Button("Save Show…") { post(.saveShow) }
+            Button("Open Show…") { post(.loadShow) }
+        }
+        CommandGroup(replacing: .importExport) {
+            Button("Import Media…") { post(.importMedia) }
+        }
+        CommandMenu("Workspace") {
+            Button("Live Editor") { post(.liveEditor) }
+            Button("Playback") { post(.playback) }
+            Button("Diagnostics") { post(.diagnostics) }
+        }
+        CommandMenu("Playback") {
+            Button("Take Preview to Program") { post(.takePreview) }
+            Button("Previous Cue") { post(.previousCue) }
+            Button("Next Cue") { post(.nextCue) }
+            Button("Capture Current Scene") { post(.captureScene) }
+        }
+        CommandMenu("Output") {
+            Button("Toggle Blackout") { post(.toggleBlackout) }
+            Button("Freeze / Unfreeze Output") { post(.toggleFreeze) }
+        }
+    }
+
+    private func post(_ action: ProMapCommandAction) {
+        NotificationCenter.default.post(
+            name: .proMapCommand,
+            object: nil,
+            userInfo: ["action": action.rawValue]
+        )
+    }
+}
+
+enum ProMapCommandAction: String {
+    case captureScene, saveShow, loadShow, importMedia
+    case liveEditor, playback, diagnostics
+    case takePreview, previousCue, nextCue
+    case toggleBlackout, toggleFreeze
+}
+
+extension Notification.Name {
+    static let proMapCommand = Notification.Name("ProMap.command")
 }
 
 private final class ProMapApplicationDelegate: NSObject, NSApplicationDelegate {
@@ -37,10 +89,10 @@ private struct OutputSettingsView: View {
     @StateObject private var syphonService = SyphonService.shared
     @StateObject private var syphonOutputService = SyphonOutputService.shared
     @AppStorage("outputAboveMenuBar") private var outputAboveMenuBar = false
-    @AppStorage("outputFrameRate") private var outputFrameRate = 60
-    @AppStorage("previewFrameRate") private var previewFrameRate = 15
-    @AppStorage("previewRenderScale") private var previewRenderScale = 1.0
-    @AppStorage("performanceProfile") private var performanceProfile = "custom"
+    @AppStorage("outputFrameRate") private var outputFrameRate = 30
+    @AppStorage("previewFrameRate") private var previewFrameRate = 10
+    @AppStorage("previewRenderScale") private var previewRenderScale = 0.5
+    @AppStorage("performanceProfile") private var performanceProfile = "performance"
     @AppStorage("sceneTransitionDuration") private var sceneTransitionDuration = 0.35
     @AppStorage("masterAudioVolume") private var masterAudioVolume = 1.0
     @AppStorage("audioOutputDeviceUID") private var audioOutputDeviceUID = ""
@@ -102,12 +154,12 @@ private struct OutputSettingsView: View {
 
     private var generalPage: some View {
         settingsPage(
-            title: "Output & Scenes",
-            detail: "Set how outputs appear and how recalled scenes transition."
+            title: "Output & Playback",
+            detail: "Set output performance and how recalled cues transition."
         ) {
             settingsCard {
                 Toggle("Keep output above the macOS menu bar", isOn: $outputAboveMenuBar)
-                settingsHint("Use this for a clean projector surface. Other windows on that display will stay behind the output.")
+                settingsHint("Use this for a clean physical projector surface. Virtual preview windows stay at normal level so operator controls remain available.")
             }
             settingsCard {
                 Picker("Rendering profile", selection: performanceProfileBinding) {
@@ -148,8 +200,8 @@ private struct OutputSettingsView: View {
                             .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
-                    Slider(value: $sceneTransitionDuration, in: 0...2, step: 0.05)
-                    settingsHint("This is the crossfade used when you take a scene from the Scenes area.")
+                    Slider(value: $sceneTransitionDuration, in: 0.05...5, step: 0.05)
+                    settingsHint("Set the default transition length. Choose Cut, Dissolve or Dip to Black and a timing curve in Playback.")
                 }
             }
         }
